@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uni_track/administration/admin_mainpage.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 import 'package:uni_track/super_administration/pages/super_admin_homepage.dart';
 
 class AdminLoginpage extends StatefulWidget {
@@ -14,7 +14,6 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _supabase = Supabase.instance.client;
 
   bool _obscurePassword = true;
   bool _isLoading = false;
@@ -33,19 +32,24 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
       });
 
       try {
-        // Query the admins table for matching credentials
-        final response = await _supabase
-            .from('admins')
-            .select()
-            .eq('email', _emailController.text.trim().toLowerCase())
-            .eq('password', _passwordController.text.trim())
-            .maybeSingle();
+        final email = _emailController.text.trim();
+        final password = _passwordController.text.trim();
+        Map<String, dynamic>? response;
+
+        final authService = MobileDataService();
+        response = await authService.authenticateUser(
+          email,
+          password,
+          allowedRoles: const ['OFFICE_USER', 'OFFICE_MANAGER', 'SUPER_ADMIN'],
+        );
 
         if (response != null) {
           if (mounted) {
             setState(() {
               _isLoading = false;
             });
+
+            final adminData = response;
 
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -55,11 +59,10 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
               ),
             );
 
-            // Check user role and navigate accordingly
-            final String role = response['role'] ?? 'admin';
+            final String role =
+                (adminData['role']?.toString() ?? 'admin').toUpperCase();
 
-            if (role == 'super_admin') {
-              // Navigate to Super Admin Homepage
+            if (role == 'SUPER_ADMIN') {
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
@@ -67,11 +70,10 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
                 ),
               );
             } else {
-              // Navigate to Regular Admin Mainpage
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (c) => AdminMainpage(userData: response),
+                  builder: (c) => AdminMainpage(userData: adminData),
                 ),
               );
             }
@@ -110,9 +112,6 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
   String? _validateEmail(String? value) {
     if (value == null || value.isEmpty) {
       return 'Please enter your email';
-    }
-    if (!value.endsWith('@mak.ac.ug')) {
-      return 'Please use your Makerere University email (@mak.ac.ug)';
     }
     if (!value.contains('@') || !value.contains('.')) {
       return 'Please enter a valid email address';

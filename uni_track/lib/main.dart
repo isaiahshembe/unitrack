@@ -3,15 +3,15 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:uni_track/config/app_config.dart';
 import 'package:uni_track/splashPage/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     await Supabase.initialize(
-      url: 'https://mjlxofeciyxbagygyxrc.supabase.co',
-      anonKey:
-          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qbHhvZmVjaXl4YmFneWd5eHJjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3OTE0MzAsImV4cCI6MjA5MjM2NzQzMH0.08h8LNzoTFVE2EpfSo-7M8MytoMtM83vvnXTGCDF_1E',
+      url: AppConfig.supabaseUrl,
+      anonKey: AppConfig.supabaseAnonKey,
     );
   } on AuthException catch (e) {
     // Handle authentication errors

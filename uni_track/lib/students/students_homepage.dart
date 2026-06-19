@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
+import 'package:uni_track/ai/ai_assistant_page.dart';
 import 'package:uni_track/analytics/analytics.dart';
 import 'package:uni_track/students/report_issues.dart';
 import 'package:uni_track/students/students_issuespage.dart';
@@ -23,6 +25,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
   int _totalIssues = 0;
   int _pendingIssues = 0;
   int _resolvedIssues = 0;
@@ -39,15 +42,23 @@ class _HomePageState extends State<HomePage> {
     try {
       final studentId = widget.userData['id'];
 
-      // Fetch issue counts
-      final issues = await _supabase
-          .from('issues')
-          .select('status')
-          .eq('student_id', studentId);
+      final issuesResponse = await _data.getComplaints(
+        studentId: studentId.toString(),
+        limit: 500,
+      );
+      final issues = List<Map<String, dynamic>>.from(
+        issuesResponse['complaints'] ?? [],
+      );
 
       _totalIssues = issues.length;
-      _pendingIssues = issues.where((i) => i['status'] == 'pending').length;
-      _resolvedIssues = issues.where((i) => i['status'] == 'resolved').length;
+      _pendingIssues = issues
+          .where((i) =>
+              i['status']?.toString().toUpperCase() == 'PENDING' ||
+              i['status']?.toString().toUpperCase() == 'OPEN')
+          .length;
+      _resolvedIssues = issues
+          .where((i) => i['status']?.toString().toUpperCase() == 'RESOLVED')
+          .length;
 
       // Fetch notice count
       final notices = await _supabase
@@ -237,8 +248,7 @@ class _HomePageState extends State<HomePage> {
                       'Track your\nreported issues',
                       Icons.list_alt,
                       Colors.blue,
-                      () => widget
-                          .onNavigateToIssues(), // Navigates to Issues tab
+                      () => widget.onNavigateToIssues(),
                     ),
                   ),
                 ],
@@ -252,11 +262,32 @@ class _HomePageState extends State<HomePage> {
                       'View university\nannouncements',
                       Icons.campaign,
                       Colors.purple,
-                      () => widget
-                          .onNavigateToNotices(), // Navigates to Notices tab
+                      () => widget.onNavigateToNotices(),
                     ),
                   ),
                   const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildActionCard(
+                      'AI Assistant',
+                      'Ask RAG/NLP\nrouting questions',
+                      Icons.auto_awesome,
+                      Colors.green,
+                      () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) =>
+                                AiAssistantPage(userData: widget.userData),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
                   Expanded(
                     child: _buildActionCard(
                       'Analytics',

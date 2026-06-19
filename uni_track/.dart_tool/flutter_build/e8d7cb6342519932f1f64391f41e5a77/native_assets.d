@@ -1,0 +1,1 @@
+ X:\\CODE\\unitrack_mobile\\unitrack\\uni_track\\.dart_tool\\flutter_build\\e8d7cb6342519932f1f64391f41e5a77\\native_assets.yaml: 

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uni_track/ai/ai_operations_page.dart';
 import 'package:uni_track/analytics/analytics.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class AdminHomepage extends StatefulWidget {
   final Map<String, dynamic> adminData;
@@ -20,6 +22,7 @@ class AdminHomepage extends StatefulWidget {
 
 class _AdminHomepageState extends State<AdminHomepage> {
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
   int _totalAssigned = 0;
   int _pendingIssues = 0;
   int _resolvedToday = 0;
@@ -42,20 +45,27 @@ class _AdminHomepageState extends State<AdminHomepage> {
     });
 
     try {
-      final adminId = widget.adminData['id'];
-
-      final issues = await _supabase
-          .from('issues')
-          .select('status, escalated, created_at, updated_at')
-          .eq('assigned_admin_id', adminId);
+      final issuesResponse = await _data.getAdminComplaints(
+        status: 'All',
+        limit: 500,
+        adminData: widget.adminData,
+      );
+      final issues = List<Map<String, dynamic>>.from(
+        issuesResponse['complaints'] ?? [],
+      );
 
       _totalAssigned = issues.length;
-      _pendingIssues = issues.where((i) => i['status'] == 'pending').length;
+      _pendingIssues = issues
+          .where((i) =>
+              i['status']?.toString().toUpperCase() == 'PENDING' ||
+              i['status']?.toString().toUpperCase() == 'OPEN')
+          .length;
       _escalatedCount = issues.where((i) => i['escalated'] == true).length;
 
       final today = DateTime.now();
       _resolvedToday = issues.where((i) {
-        if (i['status'] == 'resolved' && i['updated_at'] != null) {
+        if (i['status']?.toString().toUpperCase() == 'RESOLVED' &&
+            i['updated_at'] != null) {
           final updated = DateTime.parse(i['updated_at'].toString());
           return updated.year == today.year &&
               updated.month == today.month &&
@@ -64,11 +74,13 @@ class _AdminHomepageState extends State<AdminHomepage> {
         return false;
       }).length;
 
-      if (widget.adminData['assigned_office_id'] != null) {
+      final assignedOfficeId = _toInt(widget.adminData['assigned_office_id'] ??
+          widget.adminData['office_id']);
+      if (assignedOfficeId != null) {
         final office = await _supabase
             .from('offices')
             .select('name, level')
-            .eq('id', widget.adminData['assigned_office_id'])
+            .eq('id', assignedOfficeId)
             .maybeSingle();
 
         if (office != null) {
@@ -96,6 +108,13 @@ class _AdminHomepageState extends State<AdminHomepage> {
         );
       }
     }
+  }
+
+  int? _toInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
   }
 
   @override
@@ -363,6 +382,20 @@ class _AdminHomepageState extends State<AdminHomepage> {
           Icons.campaign,
           Colors.purple,
           () => widget.onNavigateToNotices(),
+        ),
+        _buildActionCard(
+          'AI Ops',
+          'Run AI engine tasks',
+          Icons.auto_awesome,
+          Colors.green,
+          () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => AiOperationsPage(userData: widget.adminData),
+              ),
+            );
+          },
         ),
         _buildActionCard(
           'Analytics',

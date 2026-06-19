@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 import 'package:uni_track/students/students_mainpage.dart';
 import 'package:uni_track/students/students_register.dart';
 
@@ -36,34 +37,64 @@ class _StudentLoginState extends State<StudentLogin> {
     try {
       final email = _emailController.text.trim();
       final password = _passwordController.text.trim();
+      Map<String, dynamic>? studentData;
 
-      // Step 1: Sign in with Supabase Auth
-      final authResponse = await _supabase.auth.signInWithPassword(
-        email: email,
-        password: password,
-      );
-
-      if (authResponse.user == null) {
-        throw Exception('Invalid email or password');
+      try {
+        final authService = MobileDataService();
+        studentData = await authService.authenticateUser(
+          email,
+          password,
+          allowedRoles: const ['STUDENT'],
+        );
+      } catch (e) {
+        rethrow;
       }
 
-      // Step 2: Get student details with college, course, AND department
-      final response = await _supabase
-          .from('students')
-          .select(
-            '*, colleges(name), courses(name, course_code, department_id)',
-          )
-          .eq('id', authResponse.user!.id)
-          .single();
+      if (studentData == null) {
+        // Step 1: Sign in with Supabase Auth fallback
+        final authResponse = await _supabase.auth.signInWithPassword(
+          email: email,
+          password: password,
+        );
 
-      // Convert to mutable map and extract department_id from nested course
-      final studentData = Map<String, dynamic>.from(response);
+        if (authResponse.user == null) {
+          throw Exception('Invalid email or password');
+        }
 
-      // Extract department_id from the courses object
-      if (studentData['courses'] != null) {
-        final course = studentData['courses'] as Map<String, dynamic>;
-        studentData['department_id'] = course['department_id'];
+        // Step 2: Get student details (no embedded selects - students view is multi-table)
+        final response = await _supabase
+            .from('students')
+            .select()
+            .eq('id', authResponse.user!.id)
+            .single();
+
+        studentData = Map<String, dynamic>.from(response);
+
+        // Step 3: Fetch college and course separately
+        if (studentData['college_id'] != null) {
+          final college = await _supabase
+              .from('colleges')
+              .select('name')
+              .eq('id', studentData['college_id'])
+              .maybeSingle();
+          if (college != null) {
+            studentData['colleges'] = college;
+          }
+        }
+        if (studentData['course_id'] != null) {
+          final course = await _supabase
+              .from('courses')
+              .select('name, course_code, department_id')
+              .eq('id', studentData['course_id'])
+              .maybeSingle();
+          if (course != null) {
+            studentData['courses'] = course;
+            studentData['department_id'] = course['department_id'];
+          }
+        }
       }
+
+      final currentStudentData = studentData;
 
       if (mounted) {
         setState(() {
@@ -82,7 +113,7 @@ class _StudentLoginState extends State<StudentLogin> {
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (c) => StudentsMainpage(userData: studentData),
+            builder: (c) => StudentsMainpage(userData: currentStudentData),
           ),
         );
       }
@@ -226,8 +257,8 @@ class _StudentLoginState extends State<StudentLogin> {
     if (value == null || value.isEmpty) {
       return 'Please enter your email';
     }
-    if (!value.endsWith('@students.mak.ac.ug')) {
-      return 'Please use your Makerere University email (@students.mak.ac.ug)';
+    if (!value.contains('@') || !value.contains('.')) {
+      return 'Please enter a valid email address';
     }
     return null;
   }
@@ -259,7 +290,7 @@ class _StudentLoginState extends State<StudentLogin> {
           padding: const EdgeInsets.all(20),
           child: Column(
             children: [
-             Image.asset('images/muklogo.png', height: 300, width: 300),
+              Image.asset('images/muklogo.png', height: 300, width: 300),
               Text(
                 'Student Login',
                 style: TextStyle(
@@ -282,9 +313,9 @@ class _StudentLoginState extends State<StudentLogin> {
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
                       decoration: InputDecoration(
-                        labelText: 'Makerere Email',
+                        labelText: 'Email',
                         labelStyle: TextStyle(color: Colors.grey[700]),
-                        hintText: 'student@students.mak.ac.ug',
+                        hintText: 'student@example.com',
                         hintStyle: TextStyle(color: Colors.grey[400]),
                         prefixIcon: Icon(Icons.email, color: Colors.green[600]),
                         border: OutlineInputBorder(

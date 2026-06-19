@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uni_track/administration/admin_loginpage.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class AdminProfilepage extends StatefulWidget {
   final Map<String, dynamic> adminData;
@@ -12,6 +13,7 @@ class AdminProfilepage extends StatefulWidget {
 
 class _AdminProfilepageState extends State<AdminProfilepage> {
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
 
   // Assigned Office
   Map<String, dynamic>? _assignedOffice;
@@ -107,13 +109,10 @@ class _AdminProfilepageState extends State<AdminProfilepage> {
     }
     setState(() => _isSavingPhone = true);
     try {
-      await _supabase
-          .from('admins')
-          .update({
-            'phone': _phoneController.text.trim(),
-            'updated_at': DateTime.now().toIso8601String(),
-          })
-          .eq('id', widget.adminData['id']);
+      await _supabase.from('admins').update({
+        'phone': _phoneController.text.trim(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', widget.adminData['id']);
       setState(() {
         _isEditingPhone = false;
         _isSavingPhone = false;
@@ -131,26 +130,26 @@ class _AdminProfilepageState extends State<AdminProfilepage> {
     setState(() => _isSavingPassword = true);
     try {
       final email = widget.adminData['email'];
-      try {
-        await _supabase.auth.signInWithPassword(
-          email: email,
-          password: _currentPasswordController.text.trim(),
-        );
-      } catch (e) {
+      final isValid = await _data.validateUserPassword(
+        widget.adminData['id'].toString(),
+        _currentPasswordController.text.trim(),
+      );
+
+      if (!isValid) {
         setState(() => _isSavingPassword = false);
         _showSnackBar('Current password is incorrect', Colors.red);
         return;
       }
-      await _supabase.auth.updateUser(
-        UserAttributes(password: _newPasswordController.text.trim()),
+
+      await _data.resetUserPassword(
+        widget.adminData['id'].toString(),
+        _newPasswordController.text.trim(),
       );
-      await _supabase
-          .from('admins')
-          .update({
-            'password': _newPasswordController.text.trim(),
-            'updated_at': DateTime.now().toIso8601String(),
-          })
-          .eq('id', widget.adminData['id']);
+      await _supabase.from('users').update({
+        'full_name': widget.adminData['full_name'],
+        'email': email,
+        'phone': widget.adminData['phone'],
+      }).eq('id', widget.adminData['id']);
       setState(() {
         _isSavingPassword = false;
         _isChangingPassword = false;
@@ -423,8 +422,7 @@ class _AdminProfilepageState extends State<AdminProfilepage> {
                                           ),
                                         ),
                                         Text(
-                                          widget
-                                                      .adminData['phone']
+                                          widget.adminData['phone']
                                                       ?.isNotEmpty ==
                                                   true
                                               ? widget.adminData['phone']

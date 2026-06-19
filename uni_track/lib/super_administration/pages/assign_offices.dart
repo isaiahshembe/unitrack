@@ -108,6 +108,8 @@ class _AssignOfficesState extends State<AssignOffices> {
     }
   }
 
+  String _safeText(dynamic value) => value?.toString() ?? '';
+
   String _handleErrorMessage(dynamic error) {
     if (error is PostgrestException) {
       if (error.code == '42P01') {
@@ -872,11 +874,15 @@ class _AssignOfficesState extends State<AssignOffices> {
           ),
         ),
         title: Text(
-          office['name'],
+          _safeText(office['name']),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
         subtitle: Text(
-          'Assigned to: ${admin['full_name']}',
+          'Assigned to: ${_safeText(admin['full_name'])}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 13),
         ),
         trailing: Row(
@@ -936,24 +942,24 @@ class _AssignOfficesState extends State<AssignOffices> {
                       _buildDetailRow(
                         Icons.location_on,
                         'Building',
-                        office['building'] ?? 'Not specified',
+                        _safeText(office['building']),
                       ),
                       _buildDetailRow(
                         Icons.meeting_room,
                         'Room',
-                        office['room_number'] ?? 'Not specified',
+                        _safeText(office['room_number']),
                       ),
                       if (office['colleges'] != null)
                         _buildDetailRow(
                           Icons.business,
                           'College',
-                          office['colleges']['name'],
+                          _safeText(office['colleges']?['name']),
                         ),
                       if (office['departments'] != null)
                         _buildDetailRow(
                           Icons.account_tree,
                           'Department',
-                          office['departments']['name'],
+                          _safeText(office['departments']?['name']),
                         ),
                       const Divider(height: 20),
                       const Text(
@@ -964,14 +970,17 @@ class _AssignOfficesState extends State<AssignOffices> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      _buildDetailRow(Icons.person, 'Name', admin['full_name']),
-                      _buildDetailRow(Icons.email, 'Email', admin['email']),
+                      _buildDetailRow(
+                          Icons.person, 'Name', _safeText(admin['full_name'])),
+                      _buildDetailRow(
+                          Icons.email, 'Email', _safeText(admin['email'])),
                       _buildDetailRow(
                         Icons.badge,
                         'Employee ID',
-                        admin['employee_id'],
+                        _safeText(admin['employee_id']),
                       ),
-                      _buildDetailRow(Icons.phone, 'Phone', admin['phone']),
+                      _buildDetailRow(
+                          Icons.phone, 'Phone', _safeText(admin['phone'])),
                       const Divider(height: 20),
                       _buildDetailRow(
                         Icons.calendar_today,
@@ -989,7 +998,7 @@ class _AssignOfficesState extends State<AssignOffices> {
     );
   }
 
-  Widget _buildDetailRow(IconData icon, String label, String value) {
+  Widget _buildDetailRow(IconData icon, String label, dynamic value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
@@ -1001,6 +1010,8 @@ class _AssignOfficesState extends State<AssignOffices> {
             width: 90,
             child: Text(
               label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 color: Colors.grey[600],
@@ -1010,7 +1021,9 @@ class _AssignOfficesState extends State<AssignOffices> {
           ),
           Expanded(
             child: Text(
-              value,
+              _safeText(value),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 13, color: Colors.black87),
             ),
           ),
@@ -1021,14 +1034,17 @@ class _AssignOfficesState extends State<AssignOffices> {
 
   String _getOfficeSubtitle(Map<String, dynamic> office) {
     final parts = <String>[];
-    if (office['building'] != null && office['building'].isNotEmpty) {
-      parts.add(office['building']);
+    if (office['building'] != null &&
+        _safeText(office['building']).isNotEmpty) {
+      parts.add(_safeText(office['building']));
     }
-    if (office['room_number'] != null && office['room_number'].isNotEmpty) {
-      parts.add('Rm ${office['room_number']}');
+    if (office['room_number'] != null &&
+        _safeText(office['room_number']).isNotEmpty) {
+      parts.add('Rm ${_safeText(office['room_number'])}');
     }
-    if (office['colleges'] != null) {
-      parts.add(office['colleges']['name']);
+    if (office['colleges'] != null &&
+        _safeText(office['colleges']?['name']).isNotEmpty) {
+      parts.add(_safeText(office['colleges']?['name']));
     }
     return parts.isNotEmpty ? parts.join(' • ') : 'No additional details';
   }

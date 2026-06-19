@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'dart:html' as html;
+import 'package:uni_track/ai/ai_inspector_page.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class IssueTrackingPage extends StatefulWidget {
   final Map<String, dynamic> issue;
@@ -14,7 +14,7 @@ class IssueTrackingPage extends StatefulWidget {
 }
 
 class _IssueTrackingPageState extends State<IssueTrackingPage> {
-  final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
   List<Map<String, dynamic>> _comments = [];
   bool _isLoadingComments = false;
   final _commentController = TextEditingController();
@@ -35,15 +35,11 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
   Future<void> _fetchComments() async {
     setState(() => _isLoadingComments = true);
     try {
-      final response = await _supabase
-          .from('issue_comments')
-          .select('*')
-          .eq('issue_id', widget.issue['id'])
-          .order('created_at', ascending: true);
+      final response = await _data.getComments(widget.issue['id'].toString());
 
       if (mounted) {
         setState(() {
-          _comments = List<Map<String, dynamic>>.from(response);
+          _comments = response;
           _isLoadingComments = false;
         });
       }
@@ -58,13 +54,10 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     setState(() => _isSubmittingComment = true);
 
     try {
-      await _supabase.from('issue_comments').insert({
-        'issue_id': widget.issue['id'],
-        'student_id': widget.userData?['id'],
-        'student_name': widget.userData?['full_name'] ?? 'Student',
-        'comment': _commentController.text.trim(),
-        'created_at': DateTime.now().toIso8601String(),
-      });
+      await _data.addComment(
+        complaintId: widget.issue['id'].toString(),
+        comment: _commentController.text.trim(),
+      );
 
       _commentController.clear();
       await _fetchComments();
@@ -100,7 +93,7 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
           fileName.toLowerCase().contains('.jpeg') ||
           fileName.toLowerCase().contains('.png') ||
           fileName.toLowerCase().contains('.gif');
-      
+
       if (isImage) {
         showDialog(
           context: context,
@@ -126,9 +119,11 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                         return const Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.broken_image, color: Colors.white, size: 50),
+                            Icon(Icons.broken_image,
+                                color: Colors.white, size: 50),
                             SizedBox(height: 10),
-                            Text('Failed to load image', style: TextStyle(color: Colors.white)),
+                            Text('Failed to load image',
+                                style: TextStyle(color: Colors.white)),
                           ],
                         );
                       },
@@ -139,7 +134,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                   top: 10,
                   right: 10,
                   child: IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                    icon:
+                        const Icon(Icons.close, color: Colors.white, size: 30),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ),
@@ -160,18 +156,21 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
   }
 
   // Download file
-  void _downloadFile(String url, String fileName) {
+  Future<void> _downloadFile(String url, String fileName) async {
+    if (url.isEmpty) {
+      _showSnackBar('No attachment available', Colors.orange);
+      return;
+    }
+
     try {
-      final anchor = html.AnchorElement(href: url);
-      anchor.download = fileName;
-      anchor.style.display = 'none';
-      html.document.body?.append(anchor);
-      anchor.click();
-      anchor.remove();
-      _showSnackBar('Download started: $fileName', Colors.green);
+      final uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        _showSnackBar('Cannot download this file', Colors.red);
+      }
     } catch (e) {
-      html.window.open(url, '_blank');
-      _showSnackBar('Opening file in new tab', Colors.blue);
+      _showSnackBar('Error downloading attachment: $e', Colors.red);
     }
   }
 
@@ -179,7 +178,10 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     if (fileType == null) return Icons.attach_file;
     final ext = fileType.toLowerCase();
     if (ext.contains('pdf')) return Icons.picture_as_pdf;
-    if (ext.contains('jpg') || ext.contains('jpeg') || ext.contains('png') || ext.contains('gif')) {
+    if (ext.contains('jpg') ||
+        ext.contains('jpeg') ||
+        ext.contains('png') ||
+        ext.contains('gif')) {
       return Icons.image;
     }
     if (ext.contains('doc')) return Icons.description;
@@ -191,24 +193,40 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     return Icons.insert_drive_file;
   }
 
+  Map<String, dynamic>? _mapOrNull(dynamic value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) return Map<String, dynamic>.from(value);
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final category = widget.issue['issue_categories'] as Map<String, dynamic>?;
-    final priority = widget.issue['issue_priorities'] as Map<String, dynamic>?;
-    final office = widget.issue['offices'] as Map<String, dynamic>?;
-    final admin = widget.issue['admins'] as Map<String, dynamic>?;
+    final category = _mapOrNull(widget.issue['issue_categories']) ??
+        _mapOrNull(widget.issue['category']);
+    final priority = _mapOrNull(widget.issue['issue_priorities']) ??
+        _mapOrNull(widget.issue['priority']);
+    final office = _mapOrNull(widget.issue['offices']) ??
+        _mapOrNull(widget.issue['office']);
+    final admin = _mapOrNull(widget.issue['admins']);
     final status = widget.issue['status']?.toString() ?? 'pending';
-    final escalationLevel = widget.issue['escalation_level'] ?? 0;
+    final escalationLevel = widget.issue['escalation_level'] ??
+        widget.issue['current_escalation_level'] ??
+        0;
     final maxEscalationLevel = widget.issue['max_escalation_level'] ?? 3;
-    final isEscalated = widget.issue['escalated'] == true;
-    final isRejected = status == 'rejected';
+    final isEscalated = widget.issue['escalated'] == true ||
+        status.toUpperCase() == 'ESCALATED';
+    final isRejected = status.toUpperCase() == 'REJECTED';
     final rejectionReason = widget.issue['rejection_reason']?.toString();
     final daysToResolve = priority?['days_to_resolve'] ?? 0;
-    final hasAttachment = widget.issue['attachment_url'] != null &&
-        widget.issue['attachment_url'].toString().isNotEmpty;
-    final attachmentUrl = widget.issue['attachment_url'] ?? '';
-    final attachmentName = widget.issue['attachment_name'] ?? 'Attachment';
-    final attachmentType = widget.issue['attachment_type'];
+    final attachments = widget.issue['attachments'] as List? ?? [];
+    final firstAttachment = attachments.isNotEmpty && attachments.first is Map
+        ? attachments.first as Map<String, dynamic>
+        : <String, dynamic>{};
+    final hasAttachment = firstAttachment.isNotEmpty;
+    final attachmentUrl = firstAttachment['fileUrl']?.toString() ?? '';
+    final attachmentName =
+        firstAttachment['fileName']?.toString() ?? 'Attachment';
+    final attachmentType = firstAttachment['fileType'];
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -223,6 +241,21 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
           icon: const Icon(Icons.arrow_back, color: Colors.black),
           onPressed: () => Navigator.pop(context),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.auto_awesome, color: Colors.green),
+            tooltip: 'AI Inspection',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => AiInspectorPage(
+                  issue: widget.issue,
+                  userData: widget.userData,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(20),
@@ -405,7 +438,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    _formatFileSize(widget.issue['attachment_size']),
+                                    _formatFileSize(
+                                        _toInt(firstAttachment['fileSize'])),
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.grey[600],
@@ -421,7 +455,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                           children: [
                             Expanded(
                               child: OutlinedButton.icon(
-                                onPressed: () => _previewAttachment(attachmentUrl, attachmentName),
+                                onPressed: () => _previewAttachment(
+                                    attachmentUrl, attachmentName),
                                 icon: const Icon(Icons.visibility),
                                 label: const Text('Preview'),
                                 style: OutlinedButton.styleFrom(
@@ -432,7 +467,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                             const SizedBox(width: 12),
                             Expanded(
                               child: ElevatedButton.icon(
-                                onPressed: () => _downloadFile(attachmentUrl, attachmentName),
+                                onPressed: () => _downloadFile(
+                                    attachmentUrl, attachmentName),
                                 icon: const Icon(Icons.download),
                                 label: const Text('Download'),
                                 style: ElevatedButton.styleFrom(
@@ -609,9 +645,7 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                   )
                 else
                   ..._comments.map((comment) => _buildCommentItem(comment)),
-
                 const SizedBox(height: 12),
-
                 Container(
                   decoration: BoxDecoration(
                     color: Colors.grey[50],
@@ -702,6 +736,13 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
         ),
       ),
     );
+  }
+
+  int? _toInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
   }
 
   String _formatFileSize(int? bytes) {
@@ -1031,9 +1072,14 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
   }
 
   Widget _buildCommentItem(Map<String, dynamic> comment) {
-    final isAdmin = comment['admin_id'] != null;
-    final name = comment['admin_name'] ?? comment['student_name'] ?? 'Unknown';
+    final isAdmin = comment['admin_id'] != null ||
+        comment['user_role']?.toString().toUpperCase() == 'ADMIN';
+    final name = comment['admin_name'] ??
+        comment['student_name'] ??
+        comment['user_name'] ??
+        (isAdmin ? 'Admin' : 'You');
     final role = isAdmin ? 'Admin' : 'You';
+    final text = comment['comment'] ?? comment['new_status'] ?? '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -1096,7 +1142,7 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  comment['comment'] ?? '',
+                  text,
                   style: const TextStyle(fontSize: 14, color: Colors.black87),
                 ),
               ],

@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class AddAdmin extends StatefulWidget {
   const AddAdmin({super.key});
@@ -16,6 +17,7 @@ class _AddAdminState extends State<AddAdmin> {
   final _employeeIdController = TextEditingController();
   final _phoneController = TextEditingController();
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
 
   List<Map<String, dynamic>> _admins = [];
   bool _isLoading = false;
@@ -61,6 +63,8 @@ class _AddAdminState extends State<AddAdmin> {
       });
     }
   }
+
+  String _safeText(dynamic value) => value?.toString() ?? '';
 
   String _handleErrorMessage(dynamic error) {
     if (error is PostgrestException) {
@@ -117,40 +121,13 @@ class _AddAdminState extends State<AddAdmin> {
     final phone = _phoneController.text.trim();
 
     try {
-      // Step 1: Create auth user using regular sign up
-      final authResponse = await _supabase.auth.signUp(
+      final _ = await _data.createAdmin(
+        fullName: fullName,
         email: email,
+        employeeId: employeeId,
+        phone: phone,
         password: randomPassword,
-        data: {
-          'full_name': fullName,
-          'employee_id': employeeId,
-          'phone': phone,
-          'role': 'makerere_admin',
-        },
       );
-
-      if (authResponse.user == null) {
-        throw Exception('Failed to create auth user');
-      }
-
-      final userId = authResponse.user!.id;
-
-      // Step 2: Save admin to database
-      final adminData = {
-        'id': userId,
-        'full_name': fullName,
-        'email': email,
-        'employee_id': employeeId,
-        'phone': phone,
-        'password': randomPassword,
-        'role': 'makerere_admin',
-        'created_at': DateTime.now().toIso8601String(),
-      };
-
-      await _supabase
-          .from('admins')
-          .insert(adminData)
-          .timeout(const Duration(seconds: 10));
 
       // Clear form
       _fullNameController.clear();
@@ -275,6 +252,10 @@ class _AddAdminState extends State<AddAdmin> {
   }
 
   Future<void> _resetPassword(String id, String email, String name) async {
+    if (email.isEmpty || name.isEmpty) {
+      _showSnackBar('Admin email or name is missing.', Colors.orange);
+      return;
+    }
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -311,15 +292,7 @@ class _AddAdminState extends State<AddAdmin> {
       final newPassword = _generateRandomPassword();
 
       try {
-        // Send password reset email
-        await _supabase.auth.resetPasswordForEmail(email);
-
-        // Update password in admins table
-        await _supabase
-            .from('admins')
-            .update({'password': newPassword})
-            .eq('id', id)
-            .timeout(const Duration(seconds: 10));
+        await _data.resetUserPassword(id, newPassword);
 
         setState(() {
           _isSaving = false;
@@ -328,7 +301,7 @@ class _AddAdminState extends State<AddAdmin> {
         // Show new password dialog
         await _showPasswordDialog(newPassword, name, email);
         _showSnackBar(
-          'Password reset successfully! A reset email has been sent.',
+          'Password reset successfully!',
           Colors.green,
         );
       } catch (e) {
@@ -341,6 +314,10 @@ class _AddAdminState extends State<AddAdmin> {
   }
 
   Future<void> _deleteAdmin(String id, String name) async {
+    if (name.isEmpty) {
+      _showSnackBar('Admin name is missing.', Colors.orange);
+      return;
+    }
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -502,8 +479,9 @@ class _AddAdminState extends State<AddAdmin> {
                       if (value == null || value.trim().isEmpty) {
                         return 'Please enter email';
                       }
-                      if (!value.endsWith('@mak.ac.ug')) {
-                        return 'Must be a Makerere University email (@mak.ac.ug)';
+                      if (!value.trim().contains('@') ||
+                          !value.trim().contains('.')) {
+                        return 'Please enter a valid email address';
                       }
                       return null;
                     },
@@ -705,7 +683,9 @@ class _AddAdminState extends State<AddAdmin> {
                                   ),
                                 ),
                                 title: Text(
-                                  admin['full_name'],
+                                  _safeText(admin['full_name']),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w600,
@@ -713,14 +693,16 @@ class _AddAdminState extends State<AddAdmin> {
                                   ),
                                 ),
                                 subtitle: Text(
-                                  admin['email'],
+                                  _safeText(admin['email']),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     fontSize: 12,
                                     color: Colors.grey[600],
                                   ),
                                 ),
                                 trailing: SizedBox(
-                                  width: 100,
+                                  width: 84,
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
@@ -729,26 +711,38 @@ class _AddAdminState extends State<AddAdmin> {
                                           Icons.password_outlined,
                                           color: Colors.orange,
                                         ),
+                                        padding: EdgeInsets.zero,
+                                        constraints:
+                                            const BoxConstraints.tightFor(
+                                          width: 36,
+                                          height: 36,
+                                        ),
                                         onPressed: _isSaving
                                             ? null
                                             : () => _resetPassword(
-                                                  admin['id'].toString(),
-                                                  admin['email'],
-                                                  admin['full_name'],
+                                                  _safeText(admin['id']),
+                                                  _safeText(admin['email']),
+                                                  _safeText(admin['full_name']),
                                                 ),
                                         tooltip: 'Reset Password',
                                       ),
-                                      const SizedBox(width: 5),
+                                      const SizedBox(width: 2),
                                       IconButton(
                                         icon: const Icon(
                                           Icons.delete_outline,
                                           color: Colors.red,
                                         ),
+                                        padding: EdgeInsets.zero,
+                                        constraints:
+                                            const BoxConstraints.tightFor(
+                                          width: 36,
+                                          height: 36,
+                                        ),
                                         onPressed: _isSaving
                                             ? null
                                             : () => _deleteAdmin(
-                                                  admin['id'].toString(),
-                                                  admin['full_name'],
+                                                  _safeText(admin['id']),
+                                                  _safeText(admin['full_name']),
                                                 ),
                                         tooltip: 'Delete Admin',
                                       ),
@@ -765,13 +759,13 @@ class _AddAdminState extends State<AddAdmin> {
                                         _buildInfoRow(
                                           Icons.badge_outlined,
                                           'Employee ID',
-                                          admin['employee_id'],
+                                          _safeText(admin['employee_id']),
                                         ),
                                         const SizedBox(height: 12),
                                         _buildInfoRow(
                                           Icons.phone_outlined,
                                           'Phone',
-                                          admin['phone'],
+                                          _safeText(admin['phone']),
                                         ),
                                         const SizedBox(height: 12),
                                         _buildInfoRow(
@@ -788,9 +782,10 @@ class _AddAdminState extends State<AddAdmin> {
                                         _buildInfoRow(
                                           Icons.admin_panel_settings_outlined,
                                           'Role',
-                                          admin['role'] == 'makerere_admin'
+                                          _safeText(admin['role']) ==
+                                                  'makerere_admin'
                                               ? 'Makerere Admin'
-                                              : admin['role'],
+                                              : _safeText(admin['role']),
                                         ),
                                       ],
                                     ),
@@ -807,7 +802,7 @@ class _AddAdminState extends State<AddAdmin> {
     );
   }
 
-  Widget _buildInfoRow(IconData icon, String label, String value) {
+  Widget _buildInfoRow(IconData icon, String label, dynamic value) {
     return Row(
       children: [
         Icon(icon, size: 16, color: Colors.grey[600]),
@@ -822,7 +817,9 @@ class _AddAdminState extends State<AddAdmin> {
         ),
         Expanded(
           child: Text(
-            value,
+            _safeText(value),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
           ),
         ),

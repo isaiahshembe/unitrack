@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uni_track/ai/ai_inspector_page.dart';
 import 'package:uni_track/analytics/analytics.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'dart:html' as html;
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class AdminIssuesPage extends StatefulWidget {
   final Map<String, dynamic> adminData;
@@ -14,6 +15,7 @@ class AdminIssuesPage extends StatefulWidget {
 
 class _AdminIssuesPageState extends State<AdminIssuesPage> {
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
   List<Map<String, dynamic>> _issues = [];
   List<Map<String, dynamic>> _filteredIssues = [];
   bool _isLoading = true;
@@ -34,53 +36,22 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     });
 
     try {
-      // Check escalations first
-      try {
-        await _supabase.rpc('check_and_escalate_issues');
-      } catch (e) {}
+      final filter = _selectedFilter == 'All'
+          ? null
+          : _selectedFilter == 'In Progress'
+              ? 'UNDER_REVIEW'
+              : _selectedFilter.toUpperCase();
+      final response = await _data.getAdminComplaints(
+        status: filter,
+        limit: 200,
+        adminData: widget.adminData,
+      );
 
-      final adminOfficeId = widget.adminData['office_id'];
+      final issues = List<Map<String, dynamic>>.from(
+        response['complaints'] ?? [],
+      ).map(_normalizeComplaintForLegacyUi).toList();
 
-      List<Map<String, dynamic>> response;
-
-      if (adminOfficeId != null) {
-        // Explicitly select all fields including attachments
-        response = await _supabase
-            .from('issues')
-            .select('''
-              id, title, description, location, status, escalated, 
-              escalation_level, max_escalation_level, created_at, updated_at,
-              escalated_at, last_escalated_at, student_id, assigned_office_id, 
-              assigned_admin_id, category_id, priority_id, student_email, 
-              student_name, student_phone, college_id, course_id, rejection_reason,
-              rejected_at, rejected_by_name, should_escalate, original_office_id,
-              attachment_url, attachment_name, attachment_type, attachment_size,
-              issue_categories(id, name),
-              issue_priorities(id, name, days_to_resolve)
-            ''')
-            .eq('assigned_office_id', adminOfficeId)
-            .order('created_at', ascending: false)
-            .timeout(const Duration(seconds: 10));
-      } else {
-        response = await _supabase
-            .from('issues')
-            .select('''
-              id, title, description, location, status, escalated, 
-              escalation_level, max_escalation_level, created_at, updated_at,
-              escalated_at, last_escalated_at, student_id, assigned_office_id, 
-              assigned_admin_id, category_id, priority_id, student_email, 
-              student_name, student_phone, college_id, course_id, rejection_reason,
-              rejected_at, rejected_by_name, should_escalate, original_office_id,
-              attachment_url, attachment_name, attachment_type, attachment_size,
-              issue_categories(id, name),
-              issue_priorities(id, name, days_to_resolve)
-            ''')
-            .eq('assigned_admin_id', widget.adminData['id'])
-            .order('created_at', ascending: false)
-            .timeout(const Duration(seconds: 10));
-      }
-
-      await _enrichIssuesWithDetails(response);
+      await _enrichIssuesWithDetails(issues);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -89,6 +60,38 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
         });
       }
     }
+  }
+
+  Map<String, dynamic> _normalizeComplaintForLegacyUi(
+      Map<String, dynamic> complaint) {
+    final office = complaint['office'] as Map<String, dynamic>?;
+    final category = complaint['category'] as Map<String, dynamic>?;
+    final priority = complaint['priority'] as Map<String, dynamic>?;
+    final studentInfo = complaint['student_info'] as Map<String, dynamic>?;
+    final attachments = complaint['attachments'] as List? ?? [];
+    final firstAttachment = attachments.isNotEmpty && attachments.first is Map
+        ? attachments.first as Map<String, dynamic>
+        : <String, dynamic>{};
+
+    return {
+      ...complaint,
+      'assigned_office_id': office?['id'],
+      'offices': office,
+      'original_office': office,
+      'issue_categories': category,
+      'issue_priorities': priority,
+      'student_email': studentInfo?['email'],
+      'student_name': studentInfo?['full_name'],
+      'student_phone': studentInfo?['phone'],
+      'college_id': studentInfo?['college_id'],
+      'course_id': studentInfo?['course_id'],
+      'attachment_url': firstAttachment['fileUrl'],
+      'attachment_name': firstAttachment['fileName'],
+      'attachment_type': firstAttachment['fileType'],
+      'attachment_size': firstAttachment['fileSize'],
+      'escalation_level': complaint['current_escalation_level'] ?? 0,
+      'escalation_history': complaint['statusHistory'] ?? [],
+    };
   }
 
   Future<void> _enrichIssuesWithDetails(
@@ -140,18 +143,6 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
           enriched['student_info'] = studentData;
         } catch (e) {}
       }
-
-      // Fetch escalation history
-      try {
-        final historyData = await _supabase
-            .from('escalation_history')
-            .select(
-                '*, from_office:offices!from_office_id(name, level), to_office:offices!to_office_id(name, level)')
-            .eq('issue_id', issue['id'])
-            .order('escalated_at', ascending: true);
-        enriched['escalation_history'] = historyData;
-      } catch (e) {}
-
       enrichedIssues.add(enriched);
     }
 
@@ -175,7 +166,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
         _filteredIssues = _issues
             .where(
               (i) =>
-                  i['status']?.toString().toLowerCase() == filter.toLowerCase(),
+                  i['status']?.toString().toUpperCase() == filter.toUpperCase(),
             )
             .toList();
       }
@@ -200,7 +191,11 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
         updates['should_escalate'] = false;
       }
 
-      await _supabase.from('issues').update(updates).eq('id', issueId);
+      await _data.updateComplaintStatus(
+        complaintId: issueId,
+        status: newStatus,
+        rejectionReason: rejectionReason,
+      );
 
       _showSnackBar('Status updated to: $newStatus', Colors.green);
       _fetchAssignedIssues();
@@ -258,24 +253,10 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
 
     if (confirm == true) {
       try {
-        final newEscalationLevel = (issue['escalation_level'] ?? 0) + 1;
-
-        await _supabase.from('issues').update({
-          'assigned_office_id': higherOffice['id'],
-          'escalated': true,
-          'escalation_level': newEscalationLevel,
-          'last_escalated_at': DateTime.now().toIso8601String(),
-          'status': 'escalated',
-        }).eq('id', issue['id']);
-
-        await _supabase.from('escalation_history').insert({
-          'issue_id': issue['id'],
-          'from_office_id': currentOffice?['id'],
-          'to_office_id': higherOffice['id'],
-          'escalated_at': DateTime.now().toIso8601String(),
-          'escalation_level': newEscalationLevel,
-          'reason': 'Escalated by ${widget.adminData['full_name']}',
-        });
+        await _data.patchComplaintAction(
+          complaintId: issue['id'].toString(),
+          action: 'force-escalate',
+        );
 
         _showSnackBar(
             'Issue escalated to ${higherOffice['name']}', Colors.purple);
@@ -354,13 +335,10 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
 
     if (result == true && controller.text.trim().isNotEmpty) {
       try {
-        await _supabase.from('issue_comments').insert({
-          'issue_id': int.parse(issueId),
-          'admin_id': widget.adminData['id'],
-          'admin_name': widget.adminData['full_name'],
-          'comment': controller.text.trim(),
-          'created_at': DateTime.now().toIso8601String(),
-        });
+        await _data.addComment(
+          complaintId: issueId,
+          comment: controller.text.trim(),
+        );
         _showSnackBar('Comment added successfully', Colors.green);
       } catch (e) {
         _showSnackBar('Error adding comment: $e', Colors.red);
@@ -371,11 +349,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
 
   Future<void> _viewComments(String issueId, String issueTitle) async {
     try {
-      final comments = await _supabase
-          .from('issue_comments')
-          .select('*')
-          .eq('issue_id', int.parse(issueId))
-          .order('created_at', ascending: false);
+      final comments = await _data.getComments(issueId);
 
       if (!mounted) return;
 
@@ -515,28 +489,32 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     }
   }
 
-  void _downloadFile(String url, String fileName) {
+  Future<void> _downloadFile(String url, String fileName) async {
     if (url.isEmpty) {
       _showSnackBar('No attachment available', Colors.orange);
       return;
     }
 
     try {
-      final anchor = html.AnchorElement(href: url);
-      anchor.download = fileName;
-      anchor.style.display = 'none';
-      html.document.body?.append(anchor);
-      anchor.click();
-      anchor.remove();
-      _showSnackBar('Download started: $fileName', Colors.green);
+      final uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        _showSnackBar('Cannot download this file', Colors.red);
+      }
     } catch (e) {
-      html.window.open(url, '_blank');
-      _showSnackBar('Opening file in new tab', Colors.blue);
+      _showSnackBar('Error downloading attachment: $e', Colors.red);
     }
   }
 
   Widget _buildCommentBubble(Map<String, dynamic> comment) {
-    final isAdmin = comment['admin_id'] != null;
+    final isAdmin = comment['admin_id'] != null ||
+        comment['user_role']?.toString().toUpperCase() == 'ADMIN';
+    final name = comment['admin_name'] ??
+        comment['student_name'] ??
+        comment['user_name'] ??
+        (isAdmin ? 'Admin' : 'Student');
+    final text = comment['comment'] ?? comment['new_status'] ?? '';
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       child: Column(
@@ -553,7 +531,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  comment['admin_name'] ?? comment['student_name'] ?? 'Unknown',
+                  name,
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
@@ -561,8 +539,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(comment['comment'] ?? '',
-                    style: const TextStyle(fontSize: 14)),
+                Text(text, style: const TextStyle(fontSize: 14)),
               ],
             ),
           ),
@@ -635,7 +612,9 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
   bool _canPerformActions(Map<String, dynamic> issue) {
     final status = issue['status']?.toString() ?? '';
     final isEscalated = issue['escalated'] == true;
-    return !isEscalated && status != 'resolved' && status != 'rejected';
+    return !isEscalated &&
+        status.toUpperCase() != 'RESOLVED' &&
+        status.toUpperCase() != 'REJECTED';
   }
 
   Color _getPriorityColor(String? name) {
@@ -672,10 +651,13 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     if (isEscalated) return Colors.purple;
     switch (status?.toLowerCase()) {
       case 'resolved':
+      case 'resolve':
         return Colors.green;
       case 'in_progress':
+      case 'under_review':
         return Colors.blue;
       case 'pending':
+      case 'open':
         return Colors.orange;
       case 'rejected':
         return Colors.red;
@@ -687,10 +669,13 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
   IconData _getStatusIcon(String status) {
     switch (status.toLowerCase()) {
       case 'resolved':
+      case 'resolve':
         return Icons.check_circle;
       case 'in_progress':
+      case 'under_review':
         return Icons.play_circle;
       case 'pending':
+      case 'open':
         return Icons.hourglass_empty;
       case 'rejected':
         return Icons.cancel;
@@ -924,16 +909,27 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     );
   }
 
+  Map<String, dynamic>? _mapOrNull(dynamic value) {
+    if (value is Map<String, dynamic>) return value;
+    if (value is Map) return Map<String, dynamic>.from(value);
+    return null;
+  }
+
+  List<dynamic>? _listOrNull(dynamic value) {
+    if (value is List) return value;
+    return null;
+  }
+
   Widget _buildIssueCard(Map<String, dynamic> issue) {
-    final category = issue['issue_categories'] as Map<String, dynamic>?;
-    final priority = issue['issue_priorities'] as Map<String, dynamic>?;
+    final category = _mapOrNull(issue['issue_categories']);
+    final priority = _mapOrNull(issue['issue_priorities']);
     final priorityName = priority?['name']?.toString() ?? 'N/A';
     final priorityColor = _getPriorityColor(priorityName);
     final status = issue['status']?.toString() ?? 'pending';
     final isEscalated = issue['escalated'] == true;
     final escalationLevel = issue['escalation_level'] ?? 0;
     final statusColor = _getStatusColor(status, isEscalated);
-    final studentInfo = issue['student_info'] as Map<String, dynamic>?;
+    final studentInfo = _mapOrNull(issue['student_info']);
     final studentName = studentInfo?['full_name']?.toString() ??
         issue['student_name']?.toString() ??
         'Unknown';
@@ -947,9 +943,9 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     final attachmentType = issue['attachment_type'];
     final attachmentSize = issue['attachment_size'];
 
-    final escalationHistory = issue['escalation_history'] as List? ?? [];
-    final originalOffice = issue['original_office'] as Map<String, dynamic>?;
-    final currentOffice = issue['offices'] as Map<String, dynamic>?;
+    final escalationHistory = _listOrNull(issue['escalation_history']) ?? [];
+    final originalOffice = _mapOrNull(issue['original_office']);
+    final currentOffice = _mapOrNull(issue['offices']);
     final isFromDifferentOffice = originalOffice != null &&
         currentOffice != null &&
         originalOffice['id'] != currentOffice['id'];
@@ -1450,7 +1446,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
             ),
           ),
           const SizedBox(height: 12),
-          if (status == 'rejected')
+          if (status.toUpperCase() == 'REJECTED')
             Container(
               padding: const EdgeInsets.all(12),
               margin: const EdgeInsets.only(bottom: 12),
@@ -1481,6 +1477,25 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => AiInspectorPage(
+                        issue: issue,
+                        userData: widget.adminData,
+                      ),
+                    ),
+                  ),
+                  icon: const Icon(Icons.auto_awesome, size: 18),
+                  label: const Text('AI Inspect'),
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.green,
+                      side: const BorderSide(color: Colors.green)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
                   onPressed: () => _addComment(issue['id'].toString()),
                   icon: const Icon(Icons.chat_bubble_outline, size: 18),
                   label: const Text('Add Comment'),
@@ -1507,18 +1522,20 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
             const SizedBox(height: 10),
             Row(
               children: [
-                if (status == 'pending')
+                if (status.toUpperCase() == 'PENDING' ||
+                    status.toUpperCase() == 'OPEN')
                   Expanded(
                     child: ElevatedButton.icon(
                       onPressed: () => _updateIssueStatus(
-                          issue['id'].toString(), 'in_progress'),
+                          issue['id'].toString(), 'UNDER_REVIEW'),
                       icon: const Icon(Icons.play_arrow, size: 18),
                       label: const Text('Start Working'),
                       style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.blue),
                     ),
                   ),
-                if (status == 'in_progress') ...[
+                if (status.toUpperCase() == 'UNDER_REVIEW' ||
+                    status.toUpperCase() == 'IN_PROGRESS') ...[
                   Expanded(
                     child: ElevatedButton.icon(
                       onPressed: () => _resolveIssue(issue['id'].toString()),

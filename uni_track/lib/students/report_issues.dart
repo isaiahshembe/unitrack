@@ -1,12 +1,11 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:html' as html;
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class ReportIssuePage extends StatefulWidget {
   final Map<String, dynamic>? userData;
@@ -23,9 +22,11 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   final _locationController = TextEditingController();
 
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
 
   List<Map<String, dynamic>> _categories = [];
   String? _selectedCategoryId;
+  Map<String, dynamic>? _lastAiResult;
 
   // File attachment variables
   String? _selectedFileName;
@@ -60,14 +61,10 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   Future<void> _fetchCategories() async {
     setState(() => _isLoadingCategories = true);
     try {
-      final response = await _supabase
-          .from('issue_categories')
-          .select('*, issue_priorities(*)')
-          .order('name', ascending: true)
-          .timeout(const Duration(seconds: 10));
+      final response = await _data.getCategories();
       if (mounted) {
         setState(() {
-          _categories = List<Map<String, dynamic>>.from(response);
+          _categories = response;
           _isLoadingCategories = false;
         });
       }
@@ -92,16 +89,16 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         return;
       }
 
-      final response = await _supabase
-          .from('issues')
-          .select('*')
-          .eq('student_id', studentId)
-          .order('created_at', ascending: false)
-          .limit(5);
+      final response = await _data.getComplaints(
+        studentId: studentId.toString(),
+        limit: 5,
+      );
+      final complaints =
+          List<Map<String, dynamic>>.from(response['complaints'] ?? []);
 
       if (mounted) {
         setState(() {
-          _savedIssues = List<Map<String, dynamic>>.from(response);
+          _savedIssues = complaints;
           _isLoadingIssues = false;
         });
       }
@@ -112,41 +109,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
-  // Web file picker
-  void _pickFileWeb() {
-    final html.FileUploadInputElement uploadInput =
-        html.FileUploadInputElement();
-    uploadInput.accept = '*/*';
-    uploadInput.multiple = false;
-
-    uploadInput.onChange.listen((e) {
-      final files = uploadInput.files;
-      if (files != null && files.isNotEmpty) {
-        final file = files[0];
-        _selectedFileName = file.name;
-        _selectedFileType = file.type;
-        _selectedFileSize = file.size;
-
-        if (_selectedFileSize! > 10 * 1024 * 1024) {
-          _showSnackBar('File size must be less than 10MB', Colors.red);
-          return;
-        }
-
-        final fileReader = html.FileReader();
-        fileReader.onLoadEnd.listen((event) {
-          setState(() {
-            _selectedFileData = fileReader.result as Uint8List?;
-          });
-          _showSnackBar('File selected: ${file.name}', Colors.green);
-        });
-        fileReader.readAsArrayBuffer(file);
-      }
-    });
-
-    uploadInput.click();
-  }
-
-  // Mobile file picker
   Future<void> _pickFileMobile() async {
     try {
       if (Platform.isAndroid) {
@@ -156,8 +118,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
           return;
         }
       }
-
-      final ImagePicker picker = ImagePicker();
 
       final result = await showDialog<String>(
         context: context,
@@ -188,6 +148,36 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
 
       if (result == null) return;
 
+      if (result == 'document') {
+        final pickedFile = await FilePicker.platform.pickFiles(
+          type: FileType.any,
+          allowMultiple: false,
+        );
+
+        if (pickedFile == null || pickedFile.files.isEmpty) return;
+
+        final file = pickedFile.files.first;
+        if (file.bytes == null) {
+          _showSnackBar('Unable to read selected file', Colors.red);
+          return;
+        }
+
+        _selectedFileName = file.name;
+        _selectedFileType = file.extension;
+        _selectedFileData = file.bytes;
+        _selectedFileSize = file.size;
+
+        if (_selectedFileSize! > 10 * 1024 * 1024) {
+          _showSnackBar('File size must be less than 10MB', Colors.red);
+          return;
+        }
+
+        setState(() {});
+        _showSnackBar('File selected: ${file.name}', Colors.green);
+        return;
+      }
+
+      final ImagePicker picker = ImagePicker();
       XFile? pickedFile;
 
       if (result == 'camera') {
@@ -217,15 +207,7 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
-  // Unified file picker
   Future<void> _pickFile() async {
-    try {
-      if (html.window != null) {
-        _pickFileWeb();
-        return;
-      }
-    } catch (e) {}
-
     await _pickFileMobile();
   }
 
@@ -284,6 +266,30 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     });
   }
 
+  Future<Map<String, dynamic>?> _submitIssueToMobileData({
+    required String title,
+    required String description,
+    required int categoryId,
+    String? location,
+    String? attachmentUrl,
+    String? attachmentName,
+    String? attachmentType,
+    int? attachmentSize,
+  }) async {
+    final response = await _data.createComplaint(
+      studentId: widget.userData?['id']?.toString() ?? '',
+      title: title,
+      description: description,
+      categoryId: categoryId,
+      location: location,
+      attachmentUrl: attachmentUrl,
+      attachmentName: attachmentName,
+      attachmentType: attachmentType,
+      attachmentSize: attachmentSize,
+    );
+    return response;
+  }
+
   Color _getPriorityColor(String? priorityName) {
     switch (priorityName?.toLowerCase()) {
       case 'low':
@@ -299,8 +305,9 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
-  String _getPriorityName(int? priorityId) {
-    switch (priorityId) {
+  String _getPriorityName(dynamic priorityId) {
+    final id = priorityId is int ? priorityId : int.tryParse('$priorityId');
+    switch (id) {
       case 1:
         return 'Low';
       case 2:
@@ -365,32 +372,18 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         }
       }
 
-      final selectedCategory = _categories.firstWhere(
-        (c) => c['id'].toString() == _selectedCategoryId,
+      final webComplaint = await _submitIssueToMobileData(
+        title: _titleController.text.trim(),
+        description: _descriptionController.text.trim(),
+        categoryId: int.parse(_selectedCategoryId!),
+        location: _locationController.text.trim(),
+        attachmentUrl: attachmentUrl,
+        attachmentName: attachmentName,
+        attachmentType: attachmentType,
+        attachmentSize: attachmentSize,
       );
-      final priority = selectedCategory['issue_priorities'];
 
-      final issueData = {
-        'title': _titleController.text.trim(),
-        'description': _descriptionController.text.trim(),
-        'location': _locationController.text.trim(),
-        'category_id': int.parse(_selectedCategoryId!),
-        'priority_id': priority['id'],
-        'student_id': widget.userData?['id'],
-        'student_email': widget.userData?['email'],
-        'student_name': widget.userData?['full_name'],
-        'student_phone': widget.userData?['phone'],
-        'college_id': widget.userData?['college_id'],
-        'course_id': widget.userData?['course_id'],
-        'status': 'pending',
-        'created_at': DateTime.now().toIso8601String(),
-        'attachment_url': attachmentUrl,
-        'attachment_name': attachmentName,
-        'attachment_type': attachmentType,
-        'attachment_size': attachmentSize,
-      };
-
-      await _supabase.from('issues').insert(issueData);
+      _lastAiResult = webComplaint;
 
       if (mounted) {
         setState(() => _isSubmitting = false);
@@ -557,7 +550,7 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                       hint: const Text('Select issue category'),
                       isExpanded: true,
                       items: _categories.map((category) {
-                        final priority = category['issue_priorities'];
+                        final priority = category['priority'];
                         final color = _getPriorityColor(priority?['name']);
                         return DropdownMenuItem(
                           value: category['id'].toString(),
@@ -755,6 +748,11 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 30),
 
+              if (_lastAiResult != null) ...[
+                _buildAiResultCard(_lastAiResult!),
+                const SizedBox(height: 30),
+              ],
+
               // Saved Issues Section
               if (_isLoadingIssues)
                 const Center(
@@ -797,18 +795,123 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     );
   }
 
+  Widget _buildAiResultCard(Map<String, dynamic> result) {
+    final complaint = result['complaint'] as Map<String, dynamic>? ?? {};
+    final classification = result['classification'] as Map<String, dynamic>? ??
+        complaint['classification'] as Map<String, dynamic>? ??
+        complaint['nlpResults']?['classification'] as Map<String, dynamic>?;
+    final rag = result['rag'] as Map<String, dynamic>? ??
+        complaint['rag'] as Map<String, dynamic>? ??
+        complaint['nlpResults']?['rag'] as Map<String, dynamic>?;
+    final similar = List<Map<String, dynamic>>.from(
+      result['similarComplaints'] ?? complaint['similarComplaints'] ?? [],
+    );
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.green[50],
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.green[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_awesome, color: Colors.green[700]),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'AI Routing & NLP Result',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.green[800],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _buildAiMetric(
+              'Tracking Code', complaint['trackingCode']?.toString() ?? 'N/A'),
+          _buildAiMetric(
+              'Category', complaint['category']?['name']?.toString() ?? 'N/A'),
+          _buildAiMetric('Assigned Office',
+              complaint['office']?['name']?.toString() ?? 'Unassigned'),
+          _buildAiMetric(
+              'Priority', complaint['priority']?.toString() ?? 'N/A'),
+          if (classification != null) ...[
+            _buildAiMetric('NLP Confidence',
+                '${((classification['confidence'] ?? 0) * 100).toStringAsFixed(1)}%'),
+            _buildAiMetric(
+                'NLP Method', classification['method']?.toString() ?? 'N/A'),
+          ],
+          if (rag != null) ...[
+            _buildAiMetric('RAG Confidence',
+                '${((rag['confidence'] ?? 0) * 100).toStringAsFixed(1)}%'),
+            _buildAiMetric(
+                'Routed Office',
+                rag['officeName']?.toString() ??
+                    complaint['office']?['name']?.toString() ??
+                    'N/A'),
+            Text(
+              rag['reasoning']?.toString() ??
+                  'No routing explanation available',
+              style: TextStyle(fontSize: 12, color: Colors.green[900]),
+            ),
+          ],
+          if (similar.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Similar historical complaints: ${similar.length}',
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.green[800]),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAiMetric(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 120,
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.green[700],
+                    fontWeight: FontWeight.w600)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(fontSize: 12, color: Colors.black87)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSavedIssueCard(Map<String, dynamic> issue) {
-    final priorityId = issue['priority_id'];
-    final priorityName = _getPriorityName(priorityId);
+    final priorityName = issue['priority']?['name']?.toString() ??
+        _getPriorityName(issue['priority_id']);
     final priorityColor = _getPriorityColor(priorityName);
     final status = issue['status']?.toString() ?? 'pending';
-    final statusColor = status == 'resolved'
+    final statusColor = status.toUpperCase() == 'RESOLVED'
         ? Colors.green
-        : status == 'pending'
+        : status.toUpperCase() == 'PENDING' || status.toUpperCase() == 'OPEN'
             ? Colors.orange
             : Colors.blue;
-    final hasAttachment = issue['attachment_url'] != null &&
-        issue['attachment_url'].toString().isNotEmpty;
+    final hasAttachment = issue['attachments'] is List &&
+        (issue['attachments'] as List).isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),

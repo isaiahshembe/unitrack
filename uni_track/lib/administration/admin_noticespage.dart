@@ -1,14 +1,12 @@
 import 'dart:typed_data';
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:http/http.dart' as http;
-
-// Conditional imports for web
-import 'dart:html' as html;
 
 class AdminNoticesPage extends StatefulWidget {
   final Map<String, dynamic> adminData;
@@ -138,41 +136,6 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
     } catch (e) {}
   }
 
-  // Web file picker using HTML input
-  void _pickFileWeb() {
-    final html.FileUploadInputElement uploadInput =
-        html.FileUploadInputElement();
-    uploadInput.accept = '*/*';
-    uploadInput.multiple = false;
-
-    uploadInput.onChange.listen((e) {
-      final files = uploadInput.files;
-      if (files != null && files.isNotEmpty) {
-        final file = files[0];
-        _selectedFileName = file.name;
-        _selectedFileType = file.type;
-        _selectedFileSize = file.size;
-
-        if (_selectedFileSize! > 10 * 1024 * 1024) {
-          _showSnackBar('File size must be less than 10MB', Colors.red);
-          return;
-        }
-
-        final fileReader = html.FileReader();
-        fileReader.onLoadEnd.listen((event) {
-          setState(() {
-            _selectedFileData = fileReader.result as Uint8List?;
-          });
-          _showSnackBar('File selected: ${file.name}', Colors.green);
-        });
-        fileReader.readAsArrayBuffer(file);
-      }
-    });
-
-    uploadInput.click();
-  }
-
-  // Mobile file picker using image_picker
   Future<void> _pickFileMobile() async {
     try {
       if (Platform.isAndroid) {
@@ -183,8 +146,6 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
           return;
         }
       }
-
-      final ImagePicker picker = ImagePicker();
 
       final result = await showDialog<String>(
         context: context,
@@ -203,6 +164,11 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
                 title: const Text('Gallery'),
                 onTap: () => Navigator.pop(context, 'gallery'),
               ),
+              ListTile(
+                leading: const Icon(Icons.insert_drive_file),
+                title: const Text('Document'),
+                onTap: () => Navigator.pop(context, 'document'),
+              ),
             ],
           ),
         ),
@@ -210,6 +176,36 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
 
       if (result == null) return;
 
+      if (result == 'document') {
+        final pickedFile = await FilePicker.platform.pickFiles(
+          type: FileType.any,
+          allowMultiple: false,
+        );
+
+        if (pickedFile == null || pickedFile.files.isEmpty) return;
+
+        final file = pickedFile.files.first;
+        if (file.bytes == null) {
+          _showSnackBar('Unable to read selected file', Colors.red);
+          return;
+        }
+
+        _selectedFileName = file.name;
+        _selectedFileType = file.extension;
+        _selectedFileData = file.bytes;
+        _selectedFileSize = file.size;
+
+        if (_selectedFileSize! > 10 * 1024 * 1024) {
+          _showSnackBar('File size must be less than 10MB', Colors.red);
+          return;
+        }
+
+        setState(() {});
+        _showSnackBar('File selected: ${file.name}', Colors.green);
+        return;
+      }
+
+      final ImagePicker picker = ImagePicker();
       XFile? pickedFile;
 
       if (result == 'camera') {
@@ -239,16 +235,7 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
     }
   }
 
-  // Unified file picker that works on both platforms
   Future<void> _pickFile() async {
-    // Check if running on web
-    if (identical(0, 0.0)) {
-      // This is a hack to detect web platform
-      try {
-        _pickFileWeb();
-        return;
-      } catch (e) {}
-    }
     await _pickFileMobile();
   }
 
@@ -640,16 +627,7 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
 
   /// Open file in browser (new tab)
   void _openInBrowser(String url) {
-    try {
-      if (html.window != null) {
-        html.window.open(url, '_blank');
-        _showSnackBar('Opening file in new tab', Colors.blue);
-      } else {
-        _launchUrl(url);
-      }
-    } catch (e) {
-      _launchUrl(url);
-    }
+    _launchUrl(url);
   }
 
   /// Build text file preview (loads content from URL)
@@ -704,23 +682,7 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
       return;
     }
 
-    try {
-      // Web download
-      if (html.window != null) {
-        final anchor = html.AnchorElement(href: url);
-        anchor.download = fileName;
-        anchor.style.display = 'none';
-        html.document.body?.append(anchor);
-        anchor.click();
-        anchor.remove();
-        _showSnackBar('Download started: $fileName', Colors.green);
-      } else {
-        // Mobile - launch URL
-        _launchUrl(url);
-      }
-    } catch (e) {
-      _launchUrl(url);
-    }
+    _launchUrl(url);
   }
 
   Future<void> _launchUrl(String url) async {

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:uni_track/administration/admin_loginpage.dart';
+import 'package:uni_track/ai/ai_operations_page.dart';
 import 'package:uni_track/super_administration/pages/add_admin.dart';
 import 'package:uni_track/super_administration/pages/add_college.dart';
 import 'package:uni_track/super_administration/pages/add_course.dart';
@@ -120,6 +121,30 @@ class _SuperAdminHomepageState extends State<SuperAdminHomepage> {
         children: [
           Column(
             children: [
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  minimumSize: const Size(double.infinity, 60),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                ),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (c) => const AiOperationsPage()),
+                  );
+                },
+                child: const Text(
+                  'AI OPERATIONS',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green,
