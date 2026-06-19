@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:uni_track/services/mobile_data_service.dart';
 
 class ReportIssuePage extends StatefulWidget {
@@ -28,6 +30,18 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   String? _selectedCategoryId;
   Map<String, dynamic>? _lastAiResult;
 
+  Map<String, dynamic>? _aiSuggestion;
+  bool _isAiLoading = false;
+  String? _aiError;
+  Timer? _aiDebounceTimer;
+
+  List<Map<String, dynamic>> _offices = [];
+  String? _selectedOfficeId;
+
+  double? _gpsLatitude;
+  double? _gpsLongitude;
+  bool _isGettingLocation = false;
+
   // File attachment variables
   String? _selectedFileName;
   Uint8List? _selectedFileData;
@@ -47,14 +61,20 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   void initState() {
     super.initState();
     _fetchCategories();
+    _fetchOffices();
     _fetchSavedIssues();
+    _titleController.addListener(_onTextChanged);
+    _descriptionController.addListener(_onTextChanged);
   }
 
   @override
   void dispose() {
+    _titleController.removeListener(_onTextChanged);
+    _descriptionController.removeListener(_onTextChanged);
     _titleController.dispose();
     _descriptionController.dispose();
     _locationController.dispose();
+    _aiDebounceTimer?.cancel();
     super.dispose();
   }
 
@@ -76,6 +96,15 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         });
       }
     }
+  }
+
+  Future<void> _fetchOffices() async {
+    try {
+      final offices = await _data.getOfficesList();
+      if (mounted) {
+        setState(() => _offices = offices);
+      }
+    } catch (_) {}
   }
 
   Future<void> _fetchSavedIssues() async {
@@ -266,11 +295,91 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     });
   }
 
+  Future<void> _getCurrentLocation() async {
+    setState(() => _isGettingLocation = true);
+    try {
+      final locationPermission = await Geolocator.requestPermission();
+      if (locationPermission == LocationPermission.denied ||
+          locationPermission == LocationPermission.deniedForever) {
+        _showSnackBar('Location permission denied', Colors.orange);
+        setState(() => _isGettingLocation = false);
+        return;
+      }
+
+      final position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _gpsLatitude = position.latitude;
+        _gpsLongitude = position.longitude;
+        _isGettingLocation = false;
+        if (_locationController.text.trim().isEmpty) {
+          _locationController.text =
+              '${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}';
+        }
+      });
+      _showSnackBar('Location obtained', Colors.green);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isGettingLocation = false);
+      _showSnackBar('Could not get location: $e', Colors.red);
+    }
+  }
+
+  void _onTextChanged() {
+    _aiDebounceTimer?.cancel();
+    _aiDebounceTimer =
+        Timer(const Duration(milliseconds: 800), _triggerAiSuggestion);
+  }
+
+  Future<void> _triggerAiSuggestion() async {
+    final title = _titleController.text.trim();
+    final description = _descriptionController.text.trim();
+    if (title.length < 5 || description.length < 20) return;
+
+    setState(() {
+      _isAiLoading = true;
+      _aiError = null;
+      _aiSuggestion = null;
+    });
+
+    try {
+      final result = await _data.suggestCategoryAndOffice(
+        title: title,
+        description: description,
+      );
+      if (!mounted) return;
+      setState(() {
+        _aiSuggestion = result;
+        _isAiLoading = false;
+        final suggestedCategoryId = result['categoryId'];
+        if (suggestedCategoryId != null) {
+          _selectedCategoryId = suggestedCategoryId.toString();
+        }
+        final suggestedOfficeId = result['officeId'];
+        if (suggestedOfficeId != null) {
+          _selectedOfficeId = suggestedOfficeId.toString();
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isAiLoading = false;
+        _aiError = e.toString();
+      });
+    }
+  }
+
   Future<Map<String, dynamic>?> _submitIssueToMobileData({
     required String title,
     required String description,
     required int categoryId,
+    int? officeId,
     String? location,
+    double? gpsLatitude,
+    double? gpsLongitude,
     String? attachmentUrl,
     String? attachmentName,
     String? attachmentType,
@@ -281,7 +390,10 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
       title: title,
       description: description,
       categoryId: categoryId,
+      officeId: officeId,
       location: location,
+      gpsLatitude: gpsLatitude,
+      gpsLongitude: gpsLongitude,
       attachmentUrl: attachmentUrl,
       attachmentName: attachmentName,
       attachmentType: attachmentType,
@@ -353,6 +465,10 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
       _showSnackBar('Please select an issue category', Colors.orange);
       return;
     }
+    if (_selectedOfficeId == null) {
+      _showSnackBar('Please select an office', Colors.orange);
+      return;
+    }
 
     setState(() => _isSubmitting = true);
 
@@ -376,7 +492,10 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         title: _titleController.text.trim(),
         description: _descriptionController.text.trim(),
         categoryId: int.parse(_selectedCategoryId!),
+        officeId: int.tryParse(_selectedOfficeId!),
         location: _locationController.text.trim(),
+        gpsLatitude: _gpsLatitude,
+        gpsLongitude: _gpsLongitude,
         attachmentUrl: attachmentUrl,
         attachmentName: attachmentName,
         attachmentType: attachmentType,
@@ -392,6 +511,10 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         _descriptionController.clear();
         _locationController.clear();
         _selectedCategoryId = null;
+        _selectedOfficeId = null;
+        _gpsLatitude = null;
+        _gpsLongitude = null;
+        _aiSuggestion = null;
         _removeFile();
         _fetchSavedIssues();
       }
@@ -476,13 +599,75 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 16),
 
+              // Description
+              TextFormField(
+                controller: _descriptionController,
+                maxLines: 5,
+                decoration: InputDecoration(
+                  labelText: 'Description *',
+                  hintText: 'Provide detailed information about the issue',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.green, width: 2),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty)
+                    return 'Please enter issue description';
+                  if (v.length < 20)
+                    return 'Please provide more details (minimum 20 characters)';
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // AI Suggestion Section
+              _buildAiSuggestionSection(),
+              const SizedBox(height: 16),
+
               // Category
-              const Text(
-                'Category',
-                style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.black87),
+              Row(
+                children: [
+                  const Text(
+                    'Category',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87),
+                  ),
+                  if (_aiSuggestion != null) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.indigo[100],
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.auto_awesome,
+                              size: 11, color: Colors.indigo[700]),
+                          const SizedBox(width: 3),
+                          Text('AI',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.indigo[700])),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
               ),
               const SizedBox(height: 8),
               if (_isLoadingCategories)
@@ -597,11 +782,115 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                 ),
               const SizedBox(height: 16),
 
-              // Location
+              // Office
+              Row(
+                children: [
+                  const Text(
+                    'Office',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87),
+                  ),
+                  if (_aiSuggestion != null) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.indigo[100],
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.auto_awesome,
+                              size: 11, color: Colors.indigo[700]),
+                          const SizedBox(width: 3),
+                          Text('AI',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.indigo[700])),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 8),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[300]!),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButtonFormField<String>(
+                    decoration: const InputDecoration(
+                      border: InputBorder.none,
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    ),
+                    value: _selectedOfficeId,
+                    hint: const Text('Select office'),
+                    isExpanded: true,
+                    items: _offices.map((office) {
+                      return DropdownMenuItem(
+                        value: office['id'].toString(),
+                        child: Text(
+                          office['name'] ?? 'Unnamed',
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (v) => setState(() => _selectedOfficeId = v),
+                    validator: (v) =>
+                        v == null ? 'Please select an office' : null,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Location with GPS
+              Row(
+                children: [
+                  const Text(
+                    'Location *',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.black87),
+                  ),
+                  const Spacer(),
+                  SizedBox(
+                    height: 32,
+                    child: TextButton.icon(
+                      onPressed:
+                          _isGettingLocation ? null : _getCurrentLocation,
+                      icon: _isGettingLocation
+                          ? const SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.my_location, size: 16),
+                      label: Text(
+                        _isGettingLocation ? 'Locating...' : 'Use GPS',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        foregroundColor: Colors.indigo,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               TextFormField(
                 controller: _locationController,
                 decoration: InputDecoration(
-                  labelText: 'Location *',
+                  labelText: 'Location description or coordinates',
                   hintText: 'e.g., COCIS Building, Room 301',
                   border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12)),
@@ -613,6 +902,14 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(color: Colors.grey[300]!),
                   ),
+                  suffixIcon: _gpsLatitude != null
+                      ? Tooltip(
+                          message:
+                              'Lat: ${_gpsLatitude!.toStringAsFixed(4)}, Lng: ${_gpsLongitude!.toStringAsFixed(4)}',
+                          child: Icon(Icons.location_on,
+                              color: Colors.green[600], size: 20),
+                        )
+                      : null,
                   filled: true,
                   fillColor: Colors.grey[50],
                 ),
@@ -620,36 +917,13 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                     ? 'Please enter location'
                     : null,
               ),
-              const SizedBox(height: 16),
-
-              // Description
-              TextFormField(
-                controller: _descriptionController,
-                maxLines: 5,
-                decoration: InputDecoration(
-                  labelText: 'Description *',
-                  hintText: 'Provide detailed information about the issue',
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(color: Colors.green, width: 2),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey[300]!),
-                  ),
-                  filled: true,
-                  fillColor: Colors.grey[50],
+              if (_gpsLatitude != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '📍 ${_gpsLatitude!.toStringAsFixed(4)}, ${_gpsLongitude!.toStringAsFixed(4)}',
+                  style: TextStyle(fontSize: 11, color: Colors.green[700]),
                 ),
-                validator: (v) {
-                  if (v == null || v.trim().isEmpty)
-                    return 'Please enter issue description';
-                  if (v.length < 20)
-                    return 'Please provide more details (minimum 20 characters)';
-                  return null;
-                },
-              ),
+              ],
               const SizedBox(height: 16),
 
               // File Attachment Section
@@ -795,6 +1069,178 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     );
   }
 
+  Widget _buildAiSuggestionSection() {
+    if (_isAiLoading) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.blue[50],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.blue[200]!),
+        ),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.blue[700],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              'AI is analyzing your issue...',
+              style: TextStyle(fontSize: 13, color: Colors.blue[800]),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_aiError != null) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.orange[50],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.orange[200]!),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.info_outline, size: 18, color: Colors.orange[700]),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'AI suggestion unavailable. Please select a category manually.',
+                style: TextStyle(fontSize: 12, color: Colors.orange[800]),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_aiSuggestion == null) return const SizedBox.shrink();
+
+    final confidence =
+        ((_aiSuggestion!['confidence'] ?? 0) * 100).toStringAsFixed(0);
+    final categoryName = _aiSuggestion!['categoryName']?.toString() ?? 'N/A';
+    final officeName = _aiSuggestion!['officeName']?.toString() ?? 'Unassigned';
+    final reasoning = _aiSuggestion!['reasoning']?.toString();
+    final matchedKeywords =
+        (_aiSuggestion!['matchedKeywords'] as List?)?.cast<String>() ?? [];
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.indigo[50],
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.indigo[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_awesome, color: Colors.indigo[700], size: 18),
+              const SizedBox(width: 8),
+              Text(
+                'AI Suggestion',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.indigo[800],
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.indigo[100],
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '$confidence% confidence',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.indigo[700],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _buildSuggestionRow(
+              Icons.category, 'Category', categoryName, Colors.indigo),
+          _buildSuggestionRow(
+              Icons.business, 'Office', officeName, Colors.indigo),
+          if (reasoning != null && reasoning.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              reasoning,
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.indigo[700],
+                  fontStyle: FontStyle.italic),
+            ),
+          ],
+          if (matchedKeywords.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 4,
+              runSpacing: 4,
+              children: matchedKeywords.take(6).map((keyword) {
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: Colors.indigo[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    keyword,
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.indigo[700],
+                        fontWeight: FontWeight.w500),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSuggestionRow(
+      IconData icon, String label, String value, MaterialColor color) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color[600]),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 70,
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 12,
+                    color: color[700],
+                    fontWeight: FontWeight.w600)),
+          ),
+          Expanded(
+            child: Text(value,
+                style:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAiResultCard(Map<String, dynamic> result) {
     final complaint = result['complaint'] as Map<String, dynamic>? ?? {};
     final classification = result['classification'] as Map<String, dynamic>? ??
@@ -902,8 +1348,10 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
 
   Widget _buildSavedIssueCard(Map<String, dynamic> issue) {
     dynamic priority = issue['priority'];
-    final rawPriorityName = priority is Map ? priority['name']?.toString() : null;
-    final priorityName = rawPriorityName ?? _getPriorityName(issue['priority_id']);
+    final rawPriorityName =
+        priority is Map ? priority['name']?.toString() : null;
+    final priorityName =
+        rawPriorityName ?? _getPriorityName(issue['priority_id']);
     final priorityColor = _getPriorityColor(priorityName);
     final status = issue['status']?.toString() ?? 'pending';
     final statusColor = status.toUpperCase() == 'RESOLVED'

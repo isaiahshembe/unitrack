@@ -295,6 +295,20 @@ class WebApiService {
     return getAi(action: 'stats');
   }
 
+  Future<Map<String, dynamic>> getAiSuggestion({
+    required String title,
+    required String description,
+  }) async {
+    return _request(
+      'POST',
+      '/api/mobile/ai/suggest',
+      body: {
+        'title': title,
+        'description': description,
+      },
+    );
+  }
+
   Future<Map<String, dynamic>> getAiRetrieve({
     required String query,
     int topK = 5,

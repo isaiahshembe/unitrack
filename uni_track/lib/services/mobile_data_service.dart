@@ -1015,6 +1015,47 @@ class MobileDataService {
     };
   }
 
+  Future<Map<String, dynamic>> suggestCategoryAndOffice({
+    required String title,
+    required String description,
+  }) async {
+    await _loadKeywordCaches();
+    final classification = await classifyComplaintText(title, description);
+    final categoryId = _toInt(classification['categoryId']);
+    final words = _tokens('$title $description');
+
+    final officeResult = await _suggestOffice(words, categoryId);
+    final officeId = _toInt(officeResult['officeId']);
+    final officeName = officeResult['officeName']?.toString();
+
+    String reasoning;
+    if (officeId != null && officeName != null && officeName.isNotEmpty) {
+      final chain =
+          categoryId != null ? await _escalationChain(categoryId, 0) : null;
+      if (chain != null && _toInt(chain['officeId']) == officeId) {
+        reasoning = 'Default office for ${classification['categoryName']}';
+      } else if (officeResult['usedFallback'] == true) {
+        reasoning = 'Assigned based on category configuration';
+      } else {
+        reasoning = 'Matched via keyword analysis';
+      }
+    } else {
+      reasoning = 'No specific office match found';
+    }
+
+    return {
+      'categoryId': classification['categoryId'],
+      'categoryName': classification['categoryName'],
+      'confidence': classification['confidence'],
+      'method': classification['method'],
+      'matchedKeywords': classification['matchedKeywords'],
+      'sentimentUrgency': classification['sentimentUrgency'],
+      'officeId': officeId,
+      'officeName': officeName,
+      'reasoning': reasoning,
+    };
+  }
+
   Future<Map<String, dynamic>> _retrieveRelevantDocuments(
       String query, int topK) async {
     final words = _tokens(query);
