@@ -64,10 +64,10 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
 
   Map<String, dynamic> _normalizeComplaintForLegacyUi(
       Map<String, dynamic> complaint) {
-    final office = complaint['office'] as Map<String, dynamic>?;
-    final category = complaint['category'] as Map<String, dynamic>?;
-    final priority = complaint['priority'] as Map<String, dynamic>?;
-    final studentInfo = complaint['student_info'] as Map<String, dynamic>?;
+    final office = _mapOrNull(complaint['office']);
+    final category = _mapOrNull(complaint['category']);
+    final priority = _mapOrNull(complaint['priority']);
+    final studentInfo = _mapOrNull(complaint['student_info']);
     final attachments = complaint['attachments'] as List? ?? [];
     final firstAttachment = attachments.isNotEmpty && attachments.first is Map
         ? attachments.first as Map<String, dynamic>
@@ -912,6 +912,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
   Map<String, dynamic>? _mapOrNull(dynamic value) {
     if (value is Map<String, dynamic>) return value;
     if (value is Map) return Map<String, dynamic>.from(value);
+    if (value is String && value.isEmpty) return null;
     return null;
   }
 

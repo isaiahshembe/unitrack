@@ -901,8 +901,9 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   }
 
   Widget _buildSavedIssueCard(Map<String, dynamic> issue) {
-    final priorityName = issue['priority']?['name']?.toString() ??
-        _getPriorityName(issue['priority_id']);
+    dynamic priority = issue['priority'];
+    final rawPriorityName = priority is Map ? priority['name']?.toString() : null;
+    final priorityName = rawPriorityName ?? _getPriorityName(issue['priority_id']);
     final priorityColor = _getPriorityColor(priorityName);
     final status = issue['status']?.toString() ?? 'pending';
     final statusColor = status.toUpperCase() == 'RESOLVED'
@@ -910,8 +911,10 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         : status.toUpperCase() == 'PENDING' || status.toUpperCase() == 'OPEN'
             ? Colors.orange
             : Colors.blue;
-    final hasAttachment = issue['attachments'] is List &&
-        (issue['attachments'] as List).isNotEmpty;
+    final attachments = issue['attachments'] is List
+        ? List.from(issue['attachments'])
+        : <Map<String, dynamic>>[];
+    final hasAttachment = attachments.isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),

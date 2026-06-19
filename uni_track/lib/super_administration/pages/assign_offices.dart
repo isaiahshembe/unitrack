@@ -91,21 +91,33 @@ class _AssignOfficesState extends State<AssignOffices> {
     try {
       final response = await _supabase
           .from('office_assignments')
-          .select('*, offices(*), admins(*)')
+          .select('*, offices(*)')
           .order('assigned_at', ascending: false)
           .timeout(const Duration(seconds: 10));
 
       setState(() {
-        _assignments = List<Map<String, dynamic>>.from(response);
+        _assignments = _withAdminLookup(List<Map<String, dynamic>>.from(response));
       });
     } catch (e) {
-      // Table might not exist yet
       if (e is PostgrestException && e.code == '42P01') {
         _assignments = [];
       } else {
         rethrow;
       }
     }
+  }
+
+  List<Map<String, dynamic>> _withAdminLookup(
+      List<Map<String, dynamic>> rows) {
+    for (final row in rows) {
+      if (row.containsKey('admins')) continue;
+      final admin = _admins.firstWhere(
+        (a) => a['id'] == row['admin_id'],
+        orElse: () => <String, dynamic>{},
+      );
+      row['admins'] = admin;
+    }
+    return rows;
   }
 
   String _safeText(dynamic value) => value?.toString() ?? '';
@@ -156,11 +168,14 @@ class _AssignOfficesState extends State<AssignOffices> {
             'admin_id': _selectedAdmin!['id'],
             'assigned_at': DateTime.now().toIso8601String(),
           })
-          .select('*, offices(*), admins(*)')
+          .select('*, offices(*)')
           .timeout(const Duration(seconds: 10));
 
       setState(() {
-        _assignments.insert(0, Map<String, dynamic>.from(response[0]));
+        _assignments.insertAll(
+          0,
+          _withAdminLookup(List<Map<String, dynamic>>.from(response)),
+        );
         _selectedOffice = null;
         _selectedAdmin = null;
         _isSaving = false;
