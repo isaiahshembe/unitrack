@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:uni_track/services/mobile_data_service.dart';
 
 class AddAdmin extends StatefulWidget {
   const AddAdmin({super.key});
@@ -17,7 +17,6 @@ class _AddAdminState extends State<AddAdmin> {
   final _employeeIdController = TextEditingController();
   final _phoneController = TextEditingController();
   final _supabase = Supabase.instance.client;
-  final _data = MobileDataService();
 
   List<Map<String, dynamic>> _admins = [];
   bool _isLoading = false;
@@ -49,8 +48,7 @@ class _AddAdminState extends State<AddAdmin> {
       final response = await _supabase
           .from('admins')
           .select()
-          .order('created_at', ascending: false)
-          .timeout(const Duration(seconds: 10));
+          .order('created_at', ascending: false);
 
       setState(() {
         _admins = List<Map<String, dynamic>>.from(response);
@@ -58,52 +56,18 @@ class _AddAdminState extends State<AddAdmin> {
       });
     } catch (e) {
       setState(() {
-        _errorMessage = _handleErrorMessage(e);
+        _errorMessage = 'Error fetching admins: $e';
         _isLoading = false;
       });
     }
   }
 
-  String _safeText(dynamic value) => value?.toString() ?? '';
-
-  String _handleErrorMessage(dynamic error) {
-    if (error is PostgrestException) {
-      if (error.code == '42P01') {
-        return 'Table "admins" does not exist. Please create it in Supabase.';
-      }
-      if (error.code == '23505') {
-        return 'An admin with this email or employee ID already exists.';
-      }
-      return 'Database error: ${error.message}';
-    }
-    if (error.toString().contains('User already registered')) {
-      return 'An account with this email already exists.';
-    }
-    return 'Error: $error';
-  }
-
   String _generateRandomPassword() {
-    const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const lowercase = 'abcdefghijklmnopqrstuvwxyz';
-    const numbers = '0123456789';
-    const specials = '!@#%^&*';
-
-    final allChars = uppercase + lowercase + numbers + specials;
+    const chars =
+        'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#%^&*';
     final random = Random();
-
-    String password = '';
-    password += uppercase[random.nextInt(uppercase.length)];
-    password += lowercase[random.nextInt(lowercase.length)];
-    password += numbers[random.nextInt(numbers.length)];
-    password += specials[random.nextInt(specials.length)];
-
-    for (int i = 0; i < 8; i++) {
-      password += allChars[random.nextInt(allChars.length)];
-    }
-
-    List<String> passwordList = password.split('');
-    passwordList.shuffle(random);
-    return passwordList.join();
+    return String.fromCharCodes(Iterable.generate(
+        12, (_) => chars.codeUnitAt(random.nextInt(chars.length))));
   }
 
   Future<void> _addAdmin() async {
@@ -121,13 +85,37 @@ class _AddAdminState extends State<AddAdmin> {
     final phone = _phoneController.text.trim();
 
     try {
-      final _ = await _data.createAdmin(
-        fullName: fullName,
+      // Create auth user
+      final authResponse = await _supabase.auth.signUp(
         email: email,
-        employeeId: employeeId,
-        phone: phone,
         password: randomPassword,
+        data: {
+          'full_name': fullName,
+          'employee_id': employeeId,
+          'phone': phone,
+          'role': 'makerere_admin',
+        },
       );
+
+      if (authResponse.user == null) {
+        throw Exception('Failed to create auth user');
+      }
+
+      final userId = authResponse.user!.id;
+
+      // Save to database
+      final adminData = {
+        'id': userId,
+        'full_name': fullName,
+        'email': email,
+        'employee_id': employeeId,
+        'phone': phone,
+        'password': randomPassword,
+        'role': 'makerere_admin',
+        'created_at': DateTime.now().toIso8601String(),
+      };
+
+      await _supabase.from('admins').insert(adminData);
 
       // Clear form
       _fullNameController.clear();
@@ -141,24 +129,18 @@ class _AddAdminState extends State<AddAdmin> {
 
       // Show password dialog
       await _showPasswordDialog(randomPassword, fullName, email);
-      _showSnackBar('Admin created!', Colors.green);
-
-      // Refresh list
       await _fetchAdmins();
     } catch (e) {
       setState(() {
-        _errorMessage = _handleErrorMessage(e);
+        _errorMessage = 'Error: $e';
         _isSaving = false;
       });
-      _showSnackBar(_handleErrorMessage(e), Colors.red);
+      _showSnackBar('Error: $e', Colors.red);
     }
   }
 
   Future<void> _showPasswordDialog(
-    String password,
-    String adminName,
-    String email,
-  ) async {
+      String password, String adminName, String email) async {
     return showDialog(
       context: context,
       barrierDismissible: false,
@@ -167,84 +149,66 @@ class _AddAdminState extends State<AddAdmin> {
           children: [
             Icon(Icons.check_circle, color: Colors.green, size: 28),
             SizedBox(width: 10),
-            Text(
-              'Admin Created!',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
+            Text('Admin Created'),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Admin: $adminName',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-            ),
-            Text(
-              'Email: $email',
-              style: const TextStyle(fontSize: 14, color: Colors.grey),
-            ),
-            const SizedBox(height: 16),
-            const Divider(),
-            const SizedBox(height: 8),
-            const Text(
-              'Temporary Password:',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.green[50],
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.green[200]!),
-              ),
-              child: SelectableText(
-                password,
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.green[700],
-                  fontFamily: 'monospace',
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Name: $adminName',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 5),
+              Text('Email: $email'),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(15),
+                decoration: BoxDecoration(
+                  color: Colors.green[50],
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.green[200]!),
+                ),
+                child: Column(
+                  children: [
+                    const Text('TEMPORARY PASSWORD:',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 10),
+                    SelectableText(
+                      password,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ElevatedButton.icon(
+                      icon: const Icon(Icons.copy),
+                      label: const Text('Copy Password'),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: password));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Password copied!')),
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.orange[50],
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.orange[200]!),
+              const SizedBox(height: 15),
+              const Text(
+                'Please save this password and share it with the admin.',
+                style: TextStyle(fontSize: 12),
               ),
-              child: Row(
-                children: [
-                  Icon(Icons.info_outline, color: Colors.orange[700], size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Please securely share this password with the admin. They can change it after logging in.',
-                      style: TextStyle(fontSize: 12, color: Colors.orange[700]),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
           TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-            },
-            child: const Text(
-              'OK',
-              style: TextStyle(
-                color: Colors.green,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK', style: TextStyle(color: Colors.green)),
           ),
         ],
       ),
@@ -252,61 +216,38 @@ class _AddAdminState extends State<AddAdmin> {
   }
 
   Future<void> _resetPassword(String id, String email, String name) async {
-    if (email.isEmpty || name.isEmpty) {
-      _showSnackBar('Admin email or name is missing.', Colors.orange);
-      return;
-    }
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text(
-          'Reset Password',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
+        title: const Text('Reset Password'),
         content: Text('Reset password for "$name"?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.orange,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Reset', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('Reset'),
           ),
         ],
       ),
     );
 
     if (confirm == true) {
-      setState(() {
-        _isSaving = true;
-        _errorMessage = null;
-      });
-
+      setState(() => _isSaving = true);
       final newPassword = _generateRandomPassword();
 
       try {
-        await _data.resetUserPassword(id, newPassword);
-
-        setState(() {
-          _isSaving = false;
-        });
-
-        // Show new password dialog
+        await _supabase
+            .from('admins')
+            .update({'password': newPassword}).eq('id', id);
+        setState(() => _isSaving = false);
         await _showPasswordDialog(newPassword, name, email);
-        _showSnackBar(
-          'Password reset successfully!',
-          Colors.green,
-        );
+        _showSnackBar('Password reset! New password generated.', Colors.green);
       } catch (e) {
         setState(() {
-          _errorMessage = _handleErrorMessage(e);
+          _errorMessage = 'Error: $e';
           _isSaving = false;
         });
       }
@@ -314,60 +255,36 @@ class _AddAdminState extends State<AddAdmin> {
   }
 
   Future<void> _deleteAdmin(String id, String name) async {
-    if (name.isEmpty) {
-      _showSnackBar('Admin name is missing.', Colors.orange);
-      return;
-    }
     final confirm = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text(
-          'Delete Admin',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        content: Text('Are you sure you want to delete "$name"?'),
+        title: const Text('Delete Admin'),
+        content: Text('Delete "$name"?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-          ),
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
           ),
         ],
       ),
     );
 
     if (confirm == true) {
-      setState(() {
-        _isSaving = true;
-        _errorMessage = null;
-      });
-
+      setState(() => _isSaving = true);
       try {
-        // Delete from admins table only (auth user remains but can be deleted manually)
-        await _supabase
-            .from('admins')
-            .delete()
-            .eq('id', id)
-            .timeout(const Duration(seconds: 10));
-
+        await _supabase.from('admins').delete().eq('id', id);
         setState(() {
           _admins.removeWhere((admin) => admin['id'] == id);
           _isSaving = false;
         });
-
         _showSnackBar('Admin deleted!', Colors.green);
       } catch (e) {
         setState(() {
-          _errorMessage = _handleErrorMessage(e);
+          _errorMessage = 'Error deleting: $e';
           _isSaving = false;
         });
       }
@@ -376,11 +293,7 @@ class _AddAdminState extends State<AddAdmin> {
 
   void _showSnackBar(String message, Color color) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: color,
-        duration: const Duration(seconds: 3),
-      ),
+      SnackBar(content: Text(message), backgroundColor: color),
     );
   }
 
@@ -389,30 +302,23 @@ class _AddAdminState extends State<AddAdmin> {
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
-        title: const Text(
-          'Super Admin - Manage Admins',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Colors.black,
-            fontSize: 20,
-          ),
-        ),
+        title: const Text('Uni-Track - Manage Admins'),
         backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
         elevation: 1,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black),
-          onPressed: () => Navigator.pop(context),
-        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.green),
+            onPressed: _fetchAdmins,
+          ),
+        ],
       ),
       body: Column(
         children: [
-          // Add Admin Form
+          // Form Section
           Container(
-            padding: const EdgeInsets.all(15),
-            decoration: BoxDecoration(
-              color: Colors.grey[50],
-              border: Border(bottom: BorderSide(color: Colors.grey[300]!)),
-            ),
+            padding: const EdgeInsets.all(16),
+            color: Colors.grey[50],
             child: Form(
               key: _formKey,
               child: Column(
@@ -421,103 +327,38 @@ class _AddAdminState extends State<AddAdmin> {
                     controller: _fullNameController,
                     decoration: InputDecoration(
                       labelText: 'Full Name',
-                      labelStyle: TextStyle(color: Colors.grey[600]),
-                      prefixIcon: const Icon(
-                        Icons.person_outline,
-                        color: Colors.green,
-                      ),
+                      prefixIcon: const Icon(Icons.person, color: Colors.green),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: const BorderSide(
-                          color: Colors.green,
-                          width: 2,
-                        ),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: BorderSide(color: Colors.grey[300]!),
-                      ),
+                          borderRadius: BorderRadius.circular(12)),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter full name';
-                      }
-                      return null;
-                    },
+                    validator: (v) =>
+                        v == null || v.isEmpty ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _emailController,
                     keyboardType: TextInputType.emailAddress,
                     decoration: InputDecoration(
-                      labelText: 'Email (@mak.ac.ug)',
-                      labelStyle: TextStyle(color: Colors.grey[600]),
-                      prefixIcon: const Icon(
-                        Icons.email_outlined,
-                        color: Colors.green,
-                      ),
-                      hintText: 'admin@mak.ac.ug',
+                      labelText: 'Email',
+                      prefixIcon: const Icon(Icons.email, color: Colors.green),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: const BorderSide(
-                          color: Colors.green,
-                          width: 2,
-                        ),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: BorderSide(color: Colors.grey[300]!),
-                      ),
+                          borderRadius: BorderRadius.circular(12)),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter email';
-                      }
-                      if (!value.trim().contains('@') ||
-                          !value.trim().contains('.')) {
-                        return 'Please enter a valid email address';
-                      }
-                      return null;
-                    },
+                    validator: (v) => v == null || !v.contains('@')
+                        ? 'Valid email required'
+                        : null,
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _employeeIdController,
                     decoration: InputDecoration(
                       labelText: 'Employee ID',
-                      labelStyle: TextStyle(color: Colors.grey[600]),
-                      prefixIcon: const Icon(
-                        Icons.badge_outlined,
-                        color: Colors.green,
-                      ),
-                      hintText: 'MAK-EMP-001',
+                      prefixIcon: const Icon(Icons.badge, color: Colors.green),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: const BorderSide(
-                          color: Colors.green,
-                          width: 2,
-                        ),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: BorderSide(color: Colors.grey[300]!),
-                      ),
+                          borderRadius: BorderRadius.circular(12)),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter employee ID';
-                      }
-                      return null;
-                    },
+                    validator: (v) =>
+                        v == null || v.isEmpty ? 'Required' : null,
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
@@ -525,314 +366,94 @@ class _AddAdminState extends State<AddAdmin> {
                     keyboardType: TextInputType.phone,
                     decoration: InputDecoration(
                       labelText: 'Phone Number',
-                      labelStyle: TextStyle(color: Colors.grey[600]),
-                      prefixIcon: const Icon(
-                        Icons.phone_outlined,
-                        color: Colors.green,
-                      ),
-                      hintText: '+256 XXX XXX XXX',
+                      prefixIcon: const Icon(Icons.phone, color: Colors.green),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: const BorderSide(
-                          color: Colors.green,
-                          width: 2,
-                        ),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(15),
-                        borderSide: BorderSide(color: Colors.grey[300]!),
-                      ),
+                          borderRadius: BorderRadius.circular(12)),
                     ),
-                    validator: (value) {
-                      if (value == null || value.trim().isEmpty) {
-                        return 'Please enter phone number';
-                      }
-                      return null;
-                    },
+                    validator: (v) =>
+                        v == null || v.isEmpty ? 'Required' : null,
                   ),
-                  const SizedBox(height: 15),
+                  const SizedBox(height: 16),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.green,
-                        minimumSize: const Size(double.infinity, 50),
+                        padding: const EdgeInsets.symmetric(vertical: 15),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(15),
-                        ),
+                            borderRadius: BorderRadius.circular(12)),
                       ),
                       onPressed: _isSaving ? null : _addAdmin,
                       child: _isSaving
-                          ? const SizedBox(
-                              height: 20,
-                              width: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  Colors.white,
-                                ),
-                              ),
-                            )
-                          : const Text(
-                              'CREATE ADMIN ACCOUNT',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                                color: Colors.white,
-                              ),
-                            ),
+                          ? const CircularProgressIndicator(color: Colors.white)
+                          : const Text('CREATE ADMIN',
+                              style:
+                                  TextStyle(fontSize: 16, color: Colors.white)),
                     ),
                   ),
+                  if (_errorMessage != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Text(_errorMessage!,
+                          style: const TextStyle(color: Colors.red)),
+                    ),
                 ],
               ),
             ),
           ),
 
-          if (_errorMessage != null)
-            Container(
-              padding: const EdgeInsets.all(12),
-              color: Colors.red[50],
-              child: Row(
-                children: [
-                  const Icon(Icons.error_outline, color: Colors.red),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      _errorMessage!,
-                      style: const TextStyle(color: Colors.red),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 20, color: Colors.red),
-                    onPressed: () => setState(() => _errorMessage = null),
-                  ),
-                ],
-              ),
-            ),
-
+          // List Section
           Expanded(
             child: _isLoading
                 ? const Center(
-                    child: CircularProgressIndicator(
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
-                    ),
-                  )
+                    child: CircularProgressIndicator(color: Colors.green))
                 : _admins.isEmpty
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.admin_panel_settings_outlined,
-                              size: 80,
-                              color: Colors.grey[400],
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'No admins created yet',
-                              style: TextStyle(
-                                fontSize: 18,
-                                color: Colors.grey[600],
-                                fontWeight: FontWeight.w500,
+                    ? const Center(child: Text('No admins created yet'))
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(12),
+                        itemCount: _admins.length,
+                        itemBuilder: (context, index) {
+                          final admin = _admins[index];
+                          return Card(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: Colors.green[100],
+                                child: Text('${index + 1}'),
                               ),
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Use the form above to create your first admin',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey[500],
-                              ),
-                            ),
-                          ],
-                        ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: _fetchAdmins,
-                        child: ListView.builder(
-                          padding: const EdgeInsets.all(15),
-                          itemCount: _admins.length,
-                          itemBuilder: (context, index) {
-                            final admin = _admins[index];
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 10),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(15),
-                                border: Border.all(color: Colors.grey[300]!),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.grey[100]!,
-                                    blurRadius: 5,
-                                    offset: const Offset(0, 2),
-                                  ),
-                                ],
-                              ),
-                              child: ExpansionTile(
-                                leading: CircleAvatar(
-                                  backgroundColor: Colors.green[100],
-                                  child: Text(
-                                    (index + 1).toString(),
-                                    style: TextStyle(
-                                      color: Colors.green[700],
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                                title: Text(
-                                  _safeText(admin['full_name']),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w600,
-                                    color: Colors.black,
-                                  ),
-                                ),
-                                subtitle: Text(
-                                  _safeText(admin['email']),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[600],
-                                  ),
-                                ),
-                                trailing: SizedBox(
-                                  width: 84,
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.password_outlined,
-                                          color: Colors.orange,
-                                        ),
-                                        padding: EdgeInsets.zero,
-                                        constraints:
-                                            const BoxConstraints.tightFor(
-                                          width: 36,
-                                          height: 36,
-                                        ),
-                                        onPressed: _isSaving
-                                            ? null
-                                            : () => _resetPassword(
-                                                  _safeText(admin['id']),
-                                                  _safeText(admin['email']),
-                                                  _safeText(admin['full_name']),
-                                                ),
-                                        tooltip: 'Reset Password',
-                                      ),
-                                      const SizedBox(width: 2),
-                                      IconButton(
-                                        icon: const Icon(
-                                          Icons.delete_outline,
-                                          color: Colors.red,
-                                        ),
-                                        padding: EdgeInsets.zero,
-                                        constraints:
-                                            const BoxConstraints.tightFor(
-                                          width: 36,
-                                          height: 36,
-                                        ),
-                                        onPressed: _isSaving
-                                            ? null
-                                            : () => _deleteAdmin(
-                                                  _safeText(admin['id']),
-                                                  _safeText(admin['full_name']),
-                                                ),
-                                        tooltip: 'Delete Admin',
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                              title: Text(admin['full_name']),
+                              subtitle: Text(admin['email']),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Padding(
-                                    padding: const EdgeInsets.all(16),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        _buildInfoRow(
-                                          Icons.badge_outlined,
-                                          'Employee ID',
-                                          _safeText(admin['employee_id']),
-                                        ),
-                                        const SizedBox(height: 12),
-                                        _buildInfoRow(
-                                          Icons.phone_outlined,
-                                          'Phone',
-                                          _safeText(admin['phone']),
-                                        ),
-                                        const SizedBox(height: 12),
-                                        _buildInfoRow(
-                                          Icons.calendar_today_outlined,
-                                          'Created',
-                                          admin['created_at'] != null
-                                              ? _formatDate(
-                                                  admin['created_at']
-                                                      .toString(),
-                                                )
-                                              : 'N/A',
-                                        ),
-                                        const SizedBox(height: 12),
-                                        _buildInfoRow(
-                                          Icons.admin_panel_settings_outlined,
-                                          'Role',
-                                          _safeText(admin['role']) ==
-                                                  'makerere_admin'
-                                              ? 'Makerere Admin'
-                                              : _safeText(admin['role']),
-                                        ),
-                                      ],
+                                  IconButton(
+                                    icon: const Icon(Icons.lock_reset,
+                                        color: Colors.orange),
+                                    onPressed: () => _resetPassword(
+                                      admin['id'].toString(),
+                                      admin['email'],
+                                      admin['full_name'],
                                     ),
+                                    tooltip: 'Reset Password',
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete,
+                                        color: Colors.red),
+                                    onPressed: () => _deleteAdmin(
+                                      admin['id'].toString(),
+                                      admin['full_name'],
+                                    ),
+                                    tooltip: 'Delete Admin',
                                   ),
                                 ],
                               ),
-                            );
-                          },
-                        ),
+                            ),
+                          );
+                        },
                       ),
           ),
         ],
       ),
     );
-  }
-
-  Widget _buildInfoRow(IconData icon, String label, dynamic value) {
-    return Row(
-      children: [
-        Icon(icon, size: 16, color: Colors.grey[600]),
-        const SizedBox(width: 8),
-        Text(
-          '$label: ',
-          style: TextStyle(
-            fontSize: 13,
-            color: Colors.grey[600],
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        Expanded(
-          child: Text(
-            _safeText(value),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-          ),
-        ),
-      ],
-    );
-  }
-
-  String _formatDate(String dateTime) {
-    try {
-      final date = DateTime.parse(dateTime);
-      return '${date.day}/${date.month}/${date.year}';
-    } catch (e) {
-      return dateTime.split('T')[0];
-    }
   }
 }

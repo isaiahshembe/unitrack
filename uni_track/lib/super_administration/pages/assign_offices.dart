@@ -89,16 +89,45 @@ class _AssignOfficesState extends State<AssignOffices> {
 
   Future<void> _fetchAssignments() async {
     try {
-      final response = await _supabase
+      // First get assignments with office_id and admin_id
+      final assignmentsResponse = await _supabase
           .from('office_assignments')
-          .select('*, offices(*)')
+          .select('*')
           .order('assigned_at', ascending: false)
           .timeout(const Duration(seconds: 10));
 
+      final assignments = List<Map<String, dynamic>>.from(assignmentsResponse);
+
+      // Then manually fetch the related office and admin data
+      final List<Map<String, dynamic>> enrichedAssignments = [];
+
+      for (var assignment in assignments) {
+        // Fetch office data
+        final officeResponse = await _supabase
+            .from('offices')
+            .select('*, colleges(name), departments(name)')
+            .eq('id', assignment['office_id'])
+            .maybeSingle();
+
+        // Fetch admin data
+        final adminResponse = await _supabase
+            .from('admins')
+            .select()
+            .eq('id', assignment['admin_id'])
+            .maybeSingle();
+
+        enrichedAssignments.add({
+          ...assignment,
+          'offices': officeResponse,
+          'admins': adminResponse,
+        });
+      }
+
       setState(() {
-        _assignments = _withAdminLookup(List<Map<String, dynamic>>.from(response));
+        _assignments = enrichedAssignments;
       });
     } catch (e) {
+      // Table might not exist yet
       if (e is PostgrestException && e.code == '42P01') {
         _assignments = [];
       } else {
@@ -106,21 +135,6 @@ class _AssignOfficesState extends State<AssignOffices> {
       }
     }
   }
-
-  List<Map<String, dynamic>> _withAdminLookup(
-      List<Map<String, dynamic>> rows) {
-    for (final row in rows) {
-      if (row.containsKey('admins')) continue;
-      final admin = _admins.firstWhere(
-        (a) => a['id'] == row['admin_id'],
-        orElse: () => <String, dynamic>{},
-      );
-      row['admins'] = admin;
-    }
-    return rows;
-  }
-
-  String _safeText(dynamic value) => value?.toString() ?? '';
 
   String _handleErrorMessage(dynamic error) {
     if (error is PostgrestException) {
@@ -161,6 +175,7 @@ class _AssignOfficesState extends State<AssignOffices> {
     });
 
     try {
+      // Insert assignment
       final response = await _supabase
           .from('office_assignments')
           .insert({
@@ -168,14 +183,31 @@ class _AssignOfficesState extends State<AssignOffices> {
             'admin_id': _selectedAdmin!['id'],
             'assigned_at': DateTime.now().toIso8601String(),
           })
-          .select('*, offices(*)')
+          .select()
           .timeout(const Duration(seconds: 10));
 
+      // Manually fetch the related data for the new assignment
+      final newAssignment = response[0];
+      final officeResponse = await _supabase
+          .from('offices')
+          .select('*, colleges(name), departments(name)')
+          .eq('id', newAssignment['office_id'])
+          .maybeSingle();
+
+      final adminResponse = await _supabase
+          .from('admins')
+          .select()
+          .eq('id', newAssignment['admin_id'])
+          .maybeSingle();
+
+      final enrichedAssignment = {
+        ...newAssignment,
+        'offices': officeResponse,
+        'admins': adminResponse,
+      };
+
       setState(() {
-        _assignments.insertAll(
-          0,
-          _withAdminLookup(List<Map<String, dynamic>>.from(response)),
-        );
+        _assignments.insert(0, enrichedAssignment);
         _selectedOffice = null;
         _selectedAdmin = null;
         _isSaving = false;
@@ -392,7 +424,6 @@ class _AssignOfficesState extends State<AssignOffices> {
       body: Column(
         children: [
           // Assignment Form
-          // Assignment Form
           Container(
             padding: const EdgeInsets.all(15),
             decoration: BoxDecoration(
@@ -401,7 +432,7 @@ class _AssignOfficesState extends State<AssignOffices> {
             ),
             child: Column(
               children: [
-                // Office Dropdown - FIXED
+                // Office Dropdown
                 DropdownButtonFormField<String>(
                   decoration: InputDecoration(
                     labelText: 'Select Office',
@@ -491,7 +522,7 @@ class _AssignOfficesState extends State<AssignOffices> {
                 ),
                 const SizedBox(height: 15),
 
-                // Admin Dropdown - Also fixed for consistency
+                // Admin Dropdown
                 DropdownButtonFormField<String>(
                   decoration: InputDecoration(
                     labelText: 'Select Admin',
@@ -866,6 +897,10 @@ class _AssignOfficesState extends State<AssignOffices> {
     final office = assignment['offices'];
     final admin = assignment['admins'];
 
+    if (office == null || admin == null) {
+      return const SizedBox.shrink();
+    }
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
@@ -889,15 +924,11 @@ class _AssignOfficesState extends State<AssignOffices> {
           ),
         ),
         title: Text(
-          _safeText(office['name']),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+          office['name'] ?? 'Unknown',
           style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
         subtitle: Text(
-          'Assigned to: ${_safeText(admin['full_name'])}',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+          'Assigned to: ${admin['full_name'] ?? 'Unknown'}',
           style: const TextStyle(fontSize: 13),
         ),
         trailing: Row(
@@ -957,24 +988,26 @@ class _AssignOfficesState extends State<AssignOffices> {
                       _buildDetailRow(
                         Icons.location_on,
                         'Building',
-                        _safeText(office['building']),
+                        office['building'] ?? 'Not specified',
                       ),
                       _buildDetailRow(
                         Icons.meeting_room,
                         'Room',
-                        _safeText(office['room_number']),
+                        office['room_number'] ?? 'Not specified',
                       ),
-                      if (office['colleges'] != null)
+                      if (office['colleges'] != null &&
+                          office['colleges']['name'] != null)
                         _buildDetailRow(
                           Icons.business,
                           'College',
-                          _safeText(office['colleges']?['name']),
+                          office['colleges']['name'],
                         ),
-                      if (office['departments'] != null)
+                      if (office['departments'] != null &&
+                          office['departments']['name'] != null)
                         _buildDetailRow(
                           Icons.account_tree,
                           'Department',
-                          _safeText(office['departments']?['name']),
+                          office['departments']['name'],
                         ),
                       const Divider(height: 20),
                       const Text(
@@ -986,16 +1019,16 @@ class _AssignOfficesState extends State<AssignOffices> {
                       ),
                       const SizedBox(height: 8),
                       _buildDetailRow(
-                          Icons.person, 'Name', _safeText(admin['full_name'])),
+                          Icons.person, 'Name', admin['full_name'] ?? 'N/A'),
                       _buildDetailRow(
-                          Icons.email, 'Email', _safeText(admin['email'])),
+                          Icons.email, 'Email', admin['email'] ?? 'N/A'),
                       _buildDetailRow(
                         Icons.badge,
                         'Employee ID',
-                        _safeText(admin['employee_id']),
+                        admin['employee_id'] ?? 'N/A',
                       ),
                       _buildDetailRow(
-                          Icons.phone, 'Phone', _safeText(admin['phone'])),
+                          Icons.phone, 'Phone', admin['phone'] ?? 'N/A'),
                       const Divider(height: 20),
                       _buildDetailRow(
                         Icons.calendar_today,
@@ -1013,7 +1046,7 @@ class _AssignOfficesState extends State<AssignOffices> {
     );
   }
 
-  Widget _buildDetailRow(IconData icon, String label, dynamic value) {
+  Widget _buildDetailRow(IconData icon, String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Row(
@@ -1025,8 +1058,6 @@ class _AssignOfficesState extends State<AssignOffices> {
             width: 90,
             child: Text(
               label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 13,
                 color: Colors.grey[600],
@@ -1036,9 +1067,7 @@ class _AssignOfficesState extends State<AssignOffices> {
           ),
           Expanded(
             child: Text(
-              _safeText(value),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+              value,
               style: const TextStyle(fontSize: 13, color: Colors.black87),
             ),
           ),
@@ -1049,17 +1078,14 @@ class _AssignOfficesState extends State<AssignOffices> {
 
   String _getOfficeSubtitle(Map<String, dynamic> office) {
     final parts = <String>[];
-    if (office['building'] != null &&
-        _safeText(office['building']).isNotEmpty) {
-      parts.add(_safeText(office['building']));
+    if (office['building'] != null && office['building'].isNotEmpty) {
+      parts.add(office['building']);
     }
-    if (office['room_number'] != null &&
-        _safeText(office['room_number']).isNotEmpty) {
-      parts.add('Rm ${_safeText(office['room_number'])}');
+    if (office['room_number'] != null && office['room_number'].isNotEmpty) {
+      parts.add('Rm ${office['room_number']}');
     }
-    if (office['colleges'] != null &&
-        _safeText(office['colleges']?['name']).isNotEmpty) {
-      parts.add(_safeText(office['colleges']?['name']));
+    if (office['colleges'] != null && office['colleges']['name'] != null) {
+      parts.add(office['colleges']['name']);
     }
     return parts.isNotEmpty ? parts.join(' • ') : 'No additional details';
   }

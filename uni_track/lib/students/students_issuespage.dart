@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:uni_track/ai/ai_inspector_page.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uni_track/analytics/analytics.dart';
-import 'package:uni_track/services/mobile_data_service.dart';
 import 'package:uni_track/students/report_issues.dart';
 import 'package:uni_track/students/issue_tracking.dart';
 
@@ -14,12 +13,14 @@ class IssuesPage extends StatefulWidget {
 }
 
 class _IssuesPageState extends State<IssuesPage> {
-  final _data = MobileDataService();
+  final _supabase = Supabase.instance.client;
   List<Map<String, dynamic>> _issues = [];
   List<Map<String, dynamic>> _filteredIssues = [];
   bool _isLoading = true;
+  bool _isRefreshing = false;
   String? _errorMessage;
   String _selectedFilter = 'All';
+  String? _debugInfo;
 
   @override
   void initState() {
@@ -27,30 +28,192 @@ class _IssuesPageState extends State<IssuesPage> {
     _fetchIssues();
   }
 
+  @override
+  void didUpdateWidget(IssuesPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.userData != widget.userData) {
+      _fetchIssues();
+    }
+  }
+
   Future<void> _fetchIssues() async {
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-    });
+    if (!_isLoading) {
+      setState(() {
+        _isRefreshing = true;
+        _errorMessage = null;
+      });
+    } else {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+        _debugInfo = null;
+      });
+    }
 
     try {
-      final response = await _data.getComplaints(
-          limit: 50, studentId: widget.userData?['id']?.toString());
-      final complaints =
-          List<Map<String, dynamic>>.from(response['complaints'] ?? []);
+      final studentId = widget.userData?['id'];
+
+      if (studentId == null) {
+        throw Exception('Not logged in. Please login again.');
+      }
+
+      print('🔍 Fetching issues for student: $studentId');
+
+      // Get issues - simplified query to avoid count issues
+      late List<dynamic> response;
+
+      try {
+        // Try with proper joins
+        response = await _supabase
+            .from('issues')
+            .select('''
+              *,
+              issue_categories!category_id (
+                id,
+                name,
+                description
+              ),
+              issue_priorities!priority_id (
+                id,
+                name,
+                days_to_resolve,
+                color
+              )
+            ''')
+            .eq('student_id', studentId)
+            .order('created_at', ascending: false)
+            .timeout(const Duration(seconds: 15));
+
+        print('✅ Found ${response.length} issues with joins');
+      } catch (e) {
+        print('⚠️ Join query failed: $e');
+        // Try without joins
+        try {
+          response = await _supabase
+              .from('issues')
+              .select('*')
+              .eq('student_id', studentId)
+              .order('created_at', ascending: false)
+              .timeout(const Duration(seconds: 15));
+
+          print('✅ Found ${response.length} issues without joins');
+        } catch (e2) {
+          print('❌ Both queries failed: $e2');
+          // Try a simple count first to check if table exists
+          try {
+            final countResult = await _supabase
+                .from('issues')
+                .select(
+                  'id',
+                )
+                .eq('student_id', studentId);
+            print('📊 Count result: ${countResult.length}');
+          } catch (e3) {
+            print('❌ Table may not exist: $e3');
+          }
+          rethrow;
+        }
+      }
+
+      // Process the issues
+      final List<Map<String, dynamic>> issuesWithDetails = [];
+
+      for (var issue in response) {
+        try {
+          Map<String, dynamic> enriched = Map<String, dynamic>.from(issue);
+
+          // If we didn't get category data in the join, fetch it separately
+          if (enriched['issue_categories'] == null &&
+              enriched['category_id'] != null) {
+            try {
+              final categoryData = await _supabase
+                  .from('issue_categories')
+                  .select('id, name, description')
+                  .eq('id', enriched['category_id'])
+                  .maybeSingle();
+              if (categoryData != null) {
+                enriched['issue_categories'] = categoryData;
+              }
+            } catch (e) {
+              print('⚠️ Error fetching category: $e');
+            }
+          }
+
+          // If we didn't get priority data in the join, fetch it separately
+          if (enriched['issue_priorities'] == null &&
+              enriched['priority_id'] != null) {
+            try {
+              final priorityData = await _supabase
+                  .from('issue_priorities')
+                  .select('id, name, days_to_resolve, color')
+                  .eq('id', enriched['priority_id'])
+                  .maybeSingle();
+              if (priorityData != null) {
+                enriched['issue_priorities'] = priorityData;
+              }
+            } catch (e) {
+              print('⚠️ Error fetching priority: $e');
+            }
+          }
+
+          // Get office details
+          if (enriched['assigned_office_id'] != null) {
+            try {
+              final officeData = await _supabase
+                  .from('offices')
+                  .select('id, name, building, room_number, level')
+                  .eq('id', enriched['assigned_office_id'])
+                  .maybeSingle();
+              if (officeData != null) {
+                enriched['offices'] = officeData;
+              }
+            } catch (e) {
+              print('⚠️ Error fetching office: $e');
+            }
+          }
+
+          // Get admin details
+          if (enriched['assigned_admin_id'] != null) {
+            try {
+              final adminData = await _supabase
+                  .from('admins')
+                  .select('id, full_name, email')
+                  .eq('id', enriched['assigned_admin_id'])
+                  .maybeSingle();
+              if (adminData != null) {
+                enriched['admins'] = adminData;
+              }
+            } catch (e) {
+              print('⚠️ Error fetching admin: $e');
+            }
+          }
+
+          issuesWithDetails.add(enriched);
+        } catch (e) {
+          print('⚠️ Error processing issue ${issue['id']}: $e');
+          issuesWithDetails.add(Map<String, dynamic>.from(issue));
+        }
+      }
+
+      print('✅ Total processed issues: ${issuesWithDetails.length}');
 
       if (mounted) {
         setState(() {
-          _issues = complaints;
+          _issues = issuesWithDetails;
           _filterIssues(_selectedFilter);
           _isLoading = false;
+          _isRefreshing = false;
+          _debugInfo = 'Total: ${_issues.length} issues loaded';
         });
       }
     } catch (e) {
+      print('❌ Error fetching issues: $e');
       if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to load issues. Pull to refresh. $e';
+          _errorMessage = 'Failed to load issues: ${e.toString()}';
           _isLoading = false;
+          _isRefreshing = false;
+          _debugInfo = 'Error: ${e.toString()}';
         });
       }
     }
@@ -62,16 +225,16 @@ class _IssuesPageState extends State<IssuesPage> {
       if (filter == 'All') {
         _filteredIssues = List.from(_issues);
       } else if (filter == 'Escalated') {
-        _filteredIssues = _issues
-            .where((issue) =>
-                issue['escalated'] == true || issue['status'] == 'ESCALATED')
-            .toList();
+        _filteredIssues =
+            _issues.where((issue) => issue['escalated'] == true).toList();
       } else {
+        final filterKey = filter.toLowerCase().replaceAll(' ', '_');
         _filteredIssues = _issues
             .where(
               (issue) =>
+                  issue['status']?.toString().toLowerCase() == filterKey ||
                   issue['status']?.toString().toLowerCase() ==
-                  filter.toLowerCase().replaceAll(' ', '_'),
+                      filter.toLowerCase(),
             )
             .toList();
       }
@@ -113,25 +276,24 @@ class _IssuesPageState extends State<IssuesPage> {
 
     switch (status?.toLowerCase()) {
       case 'resolved':
-      case 'open':
         return Colors.green;
       case 'in_progress':
-      case 'under_review':
         return Colors.blue;
       case 'pending':
         return Colors.orange;
       case 'rejected':
         return Colors.red;
-      case 'escalated':
-      case 'critical':
-        return Colors.purple;
       default:
         return Colors.grey;
     }
   }
 
-  String _getStatusLabel(String? status, bool isEscalated, int escalationLevel,
-      int maxEscalationLevel) {
+  String _getStatusLabel(
+    String? status,
+    bool isEscalated,
+    int escalationLevel,
+    int maxEscalationLevel,
+  ) {
     if (isEscalated) {
       return 'ESCALATED L$escalationLevel/$maxEscalationLevel';
     }
@@ -139,19 +301,12 @@ class _IssuesPageState extends State<IssuesPage> {
     switch (status?.toLowerCase()) {
       case 'resolved':
         return 'RESOLVED';
-      case 'open':
-        return 'OPEN';
       case 'in_progress':
-      case 'under_review':
         return 'IN PROGRESS';
       case 'pending':
         return 'PENDING';
       case 'rejected':
         return 'REJECTED';
-      case 'escalated':
-        return 'ESCALATED';
-      case 'critical':
-        return 'CRITICAL';
       default:
         return status?.toUpperCase() ?? 'PENDING';
     }
@@ -163,18 +318,12 @@ class _IssuesPageState extends State<IssuesPage> {
     switch (status?.toLowerCase()) {
       case 'resolved':
         return Icons.check_circle;
-      case 'open':
-        return Icons.inbox;
       case 'in_progress':
-      case 'under_review':
         return Icons.play_circle;
       case 'pending':
         return Icons.hourglass_empty;
       case 'rejected':
         return Icons.cancel;
-      case 'escalated':
-      case 'critical':
-        return Icons.trending_up;
       default:
         return Icons.hourglass_empty;
     }
@@ -191,26 +340,6 @@ class _IssuesPageState extends State<IssuesPage> {
     } catch (e) {
       return '';
     }
-  }
-
-  String _priorityNameFromIssue(dynamic priority) {
-    if (priority is Map) return priority['name']?.toString() ?? 'N/A';
-    if (priority is String) return priority;
-    if (priority is int) {
-      switch (priority) {
-        case 1:
-          return 'Low';
-        case 2:
-          return 'High';
-        case 3:
-          return 'Medium';
-        case 4:
-          return 'Critical';
-        default:
-          return 'N/A';
-      }
-    }
-    return 'N/A';
   }
 
   IconData _getFileIcon(String? fileType) {
@@ -235,14 +364,10 @@ class _IssuesPageState extends State<IssuesPage> {
   @override
   Widget build(BuildContext context) {
     final totalCount = _issues.length;
-    final pendingCount = _issues
-        .where((i) => i['status'] == 'OPEN' || i['status'] == 'UNDER_REVIEW')
-        .length;
-    final escalatedCount = _issues
-        .where((i) => i['escalated'] == true || i['status'] == 'ESCALATED')
-        .length;
+    final pendingCount = _issues.where((i) => i['status'] == 'pending').length;
+    final escalatedCount = _issues.where((i) => i['escalated'] == true).length;
     final resolvedCount =
-        _issues.where((i) => i['status'] == 'RESOLVED').length;
+        _issues.where((i) => i['status'] == 'resolved').length;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
@@ -272,13 +397,33 @@ class _IssuesPageState extends State<IssuesPage> {
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.green),
-            onPressed: _fetchIssues,
+            icon: _isRefreshing
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+                    ),
+                  )
+                : const Icon(Icons.refresh, color: Colors.green),
+            onPressed: _isRefreshing ? null : _fetchIssues,
           ),
         ],
       ),
       body: Column(
         children: [
+          if (_debugInfo != null && _debugInfo!.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              color: Colors.amber[50],
+              child: Text(
+                _debugInfo!,
+                style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          // Stats cards
           Container(
             padding: const EdgeInsets.all(16),
             child: Wrap(
@@ -324,6 +469,7 @@ class _IssuesPageState extends State<IssuesPage> {
               ],
             ),
           ),
+          // Filter chips
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: SingleChildScrollView(
@@ -346,6 +492,7 @@ class _IssuesPageState extends State<IssuesPage> {
             ),
           ),
           const SizedBox(height: 12),
+          // Issues list
           Expanded(
             child: _isLoading
                 ? const Center(
@@ -355,65 +502,74 @@ class _IssuesPageState extends State<IssuesPage> {
                   )
                 : _errorMessage != null
                     ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.error_outline,
-                              size: 60,
-                              color: Colors.red[300],
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              _errorMessage!,
-                              style: TextStyle(color: Colors.red[600]),
-                            ),
-                            const SizedBox(height: 16),
-                            ElevatedButton(
-                              onPressed: _fetchIssues,
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.green,
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                Icons.error_outline,
+                                size: 60,
+                                color: Colors.red[300],
                               ),
-                              child: const Text('Retry'),
-                            ),
-                          ],
+                              const SizedBox(height: 16),
+                              Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 24),
+                                child: Text(
+                                  _errorMessage!,
+                                  style: TextStyle(color: Colors.red[600]),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              ElevatedButton(
+                                onPressed: _fetchIssues,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                ),
+                                child: const Text('Retry'),
+                              ),
+                            ],
+                          ),
                         ),
                       )
                     : _filteredIssues.isEmpty
                         ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(20),
-                                  decoration: BoxDecoration(
-                                    color: Colors.green[50],
-                                    shape: BoxShape.circle,
+                            child: SingleChildScrollView(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(20),
+                                    decoration: BoxDecoration(
+                                      color: Colors.green[50],
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(
+                                      Icons.bug_report_outlined,
+                                      size: 60,
+                                      color: Colors.green[400],
+                                    ),
                                   ),
-                                  child: Icon(
-                                    Icons.bug_report_outlined,
-                                    size: 60,
-                                    color: Colors.green[400],
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'No issues found',
+                                    style: TextStyle(
+                                      fontSize: 20,
+                                      color: Colors.grey[600],
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 16),
-                                Text(
-                                  'No issues found',
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    color: Colors.grey[600],
-                                    fontWeight: FontWeight.w600,
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Tap + to report an issue',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey[500],
+                                    ),
                                   ),
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  'Tap + to report an issue',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    color: Colors.grey[500],
-                                  ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
                           )
                         : RefreshIndicator(
@@ -436,7 +592,9 @@ class _IssuesPageState extends State<IssuesPage> {
               builder: (context) => ReportIssuePage(userData: widget.userData),
             ),
           );
-          if (result == true) _fetchIssues();
+          if (result == true) {
+            await _fetchIssues();
+          }
         },
         backgroundColor: Colors.green,
         icon: const Icon(Icons.add, color: Colors.white),
@@ -529,40 +687,48 @@ class _IssuesPageState extends State<IssuesPage> {
     );
   }
 
-  Map<String, dynamic>? _mapOrNull(dynamic value) {
-    if (value is Map<String, dynamic>) return value;
-    if (value is Map) return Map<String, dynamic>.from(value);
-    return null;
-  }
-
   Widget _buildIssueCard(Map<String, dynamic> issue) {
-    final category =
-        _mapOrNull(issue['issue_categories']) ?? _mapOrNull(issue['category']);
-    final priority =
-        _mapOrNull(issue['issue_priorities']) ?? _mapOrNull(issue['priority']);
-    final office = _mapOrNull(issue['offices']) ?? _mapOrNull(issue['office']);
-    final priorityName = _priorityNameFromIssue(priority);
+    Map<String, dynamic>? category;
+    Map<String, dynamic>? priority;
+
+    try {
+      if (issue['issue_categories'] != null) {
+        category = issue['issue_categories'] as Map<String, dynamic>?;
+      } else if (issue['category_id'] != null) {
+        category = {'name': 'Unknown'};
+      }
+    } catch (e) {
+      category = {'name': 'Unknown'};
+    }
+
+    try {
+      if (issue['issue_priorities'] != null) {
+        priority = issue['issue_priorities'] as Map<String, dynamic>?;
+      } else if (issue['priority_id'] != null) {
+        priority = {'name': 'Medium', 'days_to_resolve': 7};
+      }
+    } catch (e) {
+      priority = {'name': 'Medium', 'days_to_resolve': 7};
+    }
+
+    final office = issue['offices'] as Map<String, dynamic>?;
+    final priorityName = priority?['name']?.toString() ?? 'Medium';
     final priorityColor = _getPriorityColor(priorityName);
     final priorityIcon = _getPriorityIcon(priorityName);
-    final isEscalated = issue['escalated'] == true ||
-        issue['status']?.toString() == 'ESCALATED';
-    final escalationLevel =
-        issue['escalation_level'] ?? issue['current_escalation_level'] ?? 0;
+    final isEscalated = issue['escalated'] == true;
+    final escalationLevel = issue['escalation_level'] ?? 0;
     final maxEscalationLevel = issue['max_escalation_level'] ?? 5;
-    final statusColor =
-        _getStatusColor(issue['status']?.toString(), isEscalated);
+    final status = issue['status']?.toString() ?? 'pending';
+    final statusColor = _getStatusColor(status, isEscalated);
     final statusLabel = _getStatusLabel(
-      issue['status']?.toString(),
+      status,
       isEscalated,
       escalationLevel,
       maxEscalationLevel,
     );
     final createdAt = issue['created_at']?.toString();
-    final attachments = issue['attachments'] as List? ?? [];
-    final firstAttachment = attachments.isNotEmpty && attachments.first is Map
-        ? attachments.first as Map<String, dynamic>
-        : <String, dynamic>{};
-    final hasAttachment = firstAttachment.isNotEmpty;
+    final hasAttachment = issue['attachment_url'] != null &&
+        issue['attachment_url'].toString().isNotEmpty;
 
     return GestureDetector(
       onTap: () {
@@ -601,7 +767,9 @@ class _IssuesPageState extends State<IssuesPage> {
                 context,
                 MaterialPageRoute(
                   builder: (context) => IssueTrackingPage(
-                      issue: issue, userData: widget.userData),
+                    issue: issue,
+                    userData: widget.userData,
+                  ),
                 ),
               ).then((_) => _fetchIssues());
             },
@@ -661,8 +829,7 @@ class _IssuesPageState extends State<IssuesPage> {
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(
-                              _getStatusIcon(
-                                  issue['status']?.toString(), isEscalated),
+                              _getStatusIcon(status, isEscalated),
                               size: 12,
                               color: statusColor,
                             ),
@@ -676,46 +843,6 @@ class _IssuesPageState extends State<IssuesPage> {
                               ),
                             ),
                           ],
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Material(
-                        color: Colors.green.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(12),
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => AiInspectorPage(
-                                  issue: issue,
-                                  userData: widget.userData,
-                                ),
-                              ),
-                            ).then((_) => _fetchIssues());
-                          },
-                          borderRadius: BorderRadius.circular(12),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 4,
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(Icons.auto_awesome,
-                                    size: 12, color: Colors.green[700]),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'AI',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.green[700],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
                         ),
                       ),
                     ],
@@ -776,12 +903,12 @@ class _IssuesPageState extends State<IssuesPage> {
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(_getFileIcon(firstAttachment['fileType']),
+                          Icon(_getFileIcon(issue['attachment_type']),
                               size: 14, color: Colors.blue[700]),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              firstAttachment['fileName'] ?? 'Attachment',
+                              issue['attachment_name'] ?? 'Attachment',
                               style: TextStyle(
                                   fontSize: 11, color: Colors.blue[700]),
                               maxLines: 1,

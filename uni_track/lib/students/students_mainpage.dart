@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:uni_track/ai/ai_assistant_page.dart';
 import 'package:uni_track/students/students_homepage.dart';
 import 'package:uni_track/students/students_issuespage.dart';
 import 'package:uni_track/students/students_noticespage.dart';
@@ -31,7 +30,6 @@ class _StudentsMainpageState extends State<StudentsMainpage> {
           onNavigateToIssues: _navigateToIssues,
           onNavigateToNotices: _navigateToNotices),
       IssuesPage(userData: widget.userData),
-      AiAssistantPage(userData: widget.userData),
       NoticesPage(userData: widget.userData),
       ProfilePage(userData: widget.userData),
     ];
@@ -45,7 +43,7 @@ class _StudentsMainpageState extends State<StudentsMainpage> {
 
   void _navigateToNotices() {
     setState(() {
-      _selectedIndex = 3;
+      _selectedIndex = 2;
     });
   }
 
@@ -93,11 +91,6 @@ class _StudentsMainpageState extends State<StudentsMainpage> {
               icon: Icon(Icons.warning_amber_outlined),
               activeIcon: Icon(Icons.warning_amber),
               label: 'Issues',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.analytics_outlined),
-              activeIcon: Icon(Icons.analytics),
-              label: 'AI',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.notifications_none),

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:uni_track/ai/ai_operations_page.dart';
 import 'package:uni_track/administration/admin_homepage.dart';
 import 'package:uni_track/administration/admin_issuespage.dart';
 import 'package:uni_track/administration/admin_noticespage.dart';
@@ -28,7 +27,6 @@ class _AdminMainpageState extends State<AdminMainpage> {
         onNavigateToNotices: _navigateToNotices,
       ),
       AdminIssuesPage(adminData: widget.userData),
-      AiOperationsPage(userData: widget.userData),
       AdminNoticesPage(adminData: widget.userData),
       AdminProfilepage(adminData: widget.userData),
     ];
@@ -42,7 +40,7 @@ class _AdminMainpageState extends State<AdminMainpage> {
 
   void _navigateToNotices() {
     setState(() {
-      _selectedIndex = 3;
+      _selectedIndex = 2;
     });
   }
 
@@ -90,11 +88,6 @@ class _AdminMainpageState extends State<AdminMainpage> {
               icon: Icon(Icons.warning_amber_outlined),
               activeIcon: Icon(Icons.warning_amber),
               label: 'Issues',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.auto_awesome_outlined),
-              activeIcon: Icon(Icons.auto_awesome),
-              label: 'AI',
             ),
             BottomNavigationBarItem(
               icon: Icon(Icons.notifications_none),

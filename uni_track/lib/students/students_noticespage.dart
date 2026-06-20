@@ -5,7 +5,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
+import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'dart:html' as html;
 
 class NoticesPage extends StatefulWidget {
   final Map<String, dynamic>? userData;
@@ -88,7 +89,31 @@ class _NoticesPageState extends State<NoticesPage> {
     }
   }
 
-  Future<void> _downloadFile(String url, String fileName) async {
+  // Web download - saves to computer downloads folder
+  void _downloadFileWeb(String url, String fileName) {
+    try {
+      // Create a hidden anchor element
+      final anchor = html.AnchorElement(href: url);
+      anchor.download = fileName;
+      anchor.style.display = 'none';
+
+      // Add to document, click, and remove
+      html.document.body?.append(anchor);
+      anchor.click();
+      // BodyElement does not have removeChild; remove the anchor node directly.
+      anchor.remove();
+
+      _showSnackBar('Download started: $fileName', Colors.green);
+    } catch (e) {
+      // Fallback: open in new tab and let browser handle download
+      html.window.open(url, '_blank');
+      _showSnackBar(
+          'Opening file in new tab. Use browser save option.', Colors.blue);
+    }
+  }
+
+  // Mobile download - saves to device storage/gallery
+  Future<void> _downloadFileMobile(String url, String fileName) async {
     if (_downloadingFiles[url] == true) {
       _showSnackBar('Download already in progress', Colors.orange);
       return;
@@ -99,6 +124,7 @@ class _NoticesPageState extends State<NoticesPage> {
     });
 
     try {
+      // Show progress dialog
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -114,20 +140,24 @@ class _NoticesPageState extends State<NoticesPage> {
         ),
       );
 
+      // Download file
       final response = await http.get(Uri.parse(url));
       if (response.statusCode != 200) {
         throw Exception('Failed to download file');
       }
 
+      // Close progress dialog
       Navigator.pop(context);
 
+      // Check file type
       final isImage = fileName.toLowerCase().endsWith('.jpg') ||
           fileName.toLowerCase().endsWith('.jpeg') ||
           fileName.toLowerCase().endsWith('.png') ||
           fileName.toLowerCase().endsWith('.gif');
 
       if (isImage) {
-        final result = await ImageGallerySaverPlus.saveImage(
+        // Save to gallery for images
+        final result = await ImageGallerySaver.saveImage(
           Uint8List.fromList(response.bodyBytes),
           quality: 100,
           name: fileName,
@@ -139,9 +169,11 @@ class _NoticesPageState extends State<NoticesPage> {
           _showSnackBar('Failed to save image', Colors.red);
         }
       } else {
+        // Save to downloads folder for other files
         Directory? downloadDir;
 
         if (Platform.isAndroid) {
+          // Request permission for Android 10 and below
           if (await Permission.storage.isDenied) {
             final status = await Permission.storage.request();
             if (!status.isGranted) {
@@ -168,6 +200,7 @@ class _NoticesPageState extends State<NoticesPage> {
           _showSnackBar(
               'Downloaded: $fileName to ${downloadsFolder.path}', Colors.green);
 
+          // Ask to open file
           final openFile = await showDialog<bool>(
             context: context,
             builder: (context) => AlertDialog(
@@ -190,7 +223,9 @@ class _NoticesPageState extends State<NoticesPage> {
           );
 
           if (openFile == true) {
+            // For Android, we can try to open with appropriate app
             if (Platform.isAndroid) {
+              // Use a package like open_file or just show a message
               _showSnackBar(
                   'File saved. You can find it in UniTrack_Downloads folder.',
                   Colors.blue);
@@ -199,6 +234,7 @@ class _NoticesPageState extends State<NoticesPage> {
         }
       }
     } catch (e) {
+      // Close progress dialog if open
       if (Navigator.canPop(context)) {
         Navigator.pop(context);
       }
@@ -210,6 +246,23 @@ class _NoticesPageState extends State<NoticesPage> {
     }
   }
 
+  // Main download method
+  Future<void> _downloadFile(String url, String fileName) async {
+    // Check if web
+    try {
+      if (html.window != null) {
+        _downloadFileWeb(url, fileName);
+        return;
+      }
+    } catch (e) {
+      // Not web, use mobile
+    }
+
+    // Mobile
+    await _downloadFileMobile(url, fileName);
+  }
+
+  // Preview file
   Future<void> _previewFile(
       String url, String fileName, String? fileType) async {
     try {

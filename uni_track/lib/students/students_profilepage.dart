@@ -41,12 +41,24 @@ class ProfilePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final college = userData['colleges'] != null
-        ? userData['colleges']['name']
-        : 'N/A';
-    final course = userData['courses'] != null
-        ? userData['courses']['name']
-        : 'N/A';
+    // FIXED: Get college and course from flat data structure
+    final college = userData['college_name'] ??
+        userData['colleges']?['name'] ??
+        'Not Assigned';
+
+    final course = userData['course_name'] ??
+        userData['courses']?['name'] ??
+        'Not Assigned';
+
+    final courseCode =
+        userData['course_code'] ?? userData['courses']?['course_code'] ?? 'N/A';
+
+    final department = userData['department_name'] ?? 'N/A';
+
+    final studentId = userData['student_id'] ?? 'N/A';
+    final email = userData['email'] ?? 'N/A';
+    final phone = userData['phone'] ?? 'Not provided';
+    final fullName = userData['full_name'] ?? 'N/A';
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -101,7 +113,7 @@ class ProfilePage extends StatelessWidget {
 
                 // Student Name
                 Text(
-                  userData['full_name'] ?? 'N/A',
+                  fullName,
                   style: TextStyle(
                     fontSize: isSmallScreen ? 20 : 24,
                     fontWeight: FontWeight.bold,
@@ -111,7 +123,7 @@ class ProfilePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  course,
+                  '$course ($courseCode)',
                   style: TextStyle(
                     fontSize: isSmallScreen ? 12 : 14,
                     color: Colors.grey[600],
@@ -139,23 +151,21 @@ class ProfilePage extends StatelessWidget {
                       _buildProfileInfoItem(
                         Icons.badge,
                         'Student ID',
-                        userData['student_id'] ?? 'N/A',
+                        studentId,
                         Colors.blue,
                       ),
                       const Divider(height: 1, thickness: 1),
                       _buildProfileInfoItem(
                         Icons.email,
                         'Email',
-                        userData['email'] ?? 'N/A',
+                        email,
                         Colors.red,
                       ),
                       const Divider(height: 1, thickness: 1),
                       _buildProfileInfoItem(
                         Icons.phone,
                         'Phone',
-                        userData['phone']?.isNotEmpty == true
-                            ? userData['phone']
-                            : 'Not provided',
+                        phone.isNotEmpty ? phone : 'Not provided',
                         Colors.green,
                       ),
                       const Divider(height: 1, thickness: 1),
@@ -171,6 +181,20 @@ class ProfilePage extends StatelessWidget {
                         'Course',
                         course,
                         Colors.orange,
+                      ),
+                      const Divider(height: 1, thickness: 1),
+                      _buildProfileInfoItem(
+                        Icons.category_outlined,
+                        'Course Code',
+                        courseCode,
+                        Colors.teal,
+                      ),
+                      const Divider(height: 1, thickness: 1),
+                      _buildProfileInfoItem(
+                        Icons.business_center,
+                        'Department',
+                        department,
+                        Colors.indigo,
                       ),
                     ],
                   ),

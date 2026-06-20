@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uni_track/administration/admin_mainpage.dart';
-import 'package:uni_track/services/mobile_data_service.dart';
+import 'package:uni_track/landindPage/landing_page.dart';
 import 'package:uni_track/super_administration/pages/super_admin_homepage.dart';
 
 class AdminLoginpage extends StatefulWidget {
@@ -14,6 +15,7 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  final _supabase = Supabase.instance.client;
 
   bool _obscurePassword = true;
   bool _isLoading = false;
@@ -32,24 +34,19 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
       });
 
       try {
-        final email = _emailController.text.trim();
-        final password = _passwordController.text.trim();
-        Map<String, dynamic>? response;
-
-        final authService = MobileDataService();
-        response = await authService.authenticateUser(
-          email,
-          password,
-          allowedRoles: const ['OFFICE_USER', 'OFFICE_MANAGER', 'SUPER_ADMIN'],
-        );
+        // Query the admins table for matching credentials
+        final response = await _supabase
+            .from('admins')
+            .select()
+            .eq('email', _emailController.text.trim().toLowerCase())
+            .eq('password', _passwordController.text.trim())
+            .maybeSingle();
 
         if (response != null) {
           if (mounted) {
             setState(() {
               _isLoading = false;
             });
-
-            final adminData = response;
 
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
@@ -59,10 +56,11 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
               ),
             );
 
-            final String role =
-                (adminData['role']?.toString() ?? 'admin').toUpperCase();
+            // Check user role and navigate accordingly
+            final String role = response['role'] ?? 'admin';
 
-            if (role == 'SUPER_ADMIN') {
+            if (role == 'super_admin') {
+              // Navigate to Super Admin Homepage
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
@@ -70,10 +68,11 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
                 ),
               );
             } else {
+              // Navigate to Regular Admin Mainpage
               Navigator.pushReplacement(
                 context,
                 MaterialPageRoute(
-                  builder: (c) => AdminMainpage(userData: adminData),
+                  builder: (c) => AdminMainpage(userData: response),
                 ),
               );
             }
@@ -112,6 +111,9 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
   String? _validateEmail(String? value) {
     if (value == null || value.isEmpty) {
       return 'Please enter your email';
+    }
+    if (!value.endsWith('@mak.ac.ug')) {
+      return 'Please use your Makerere University email (@mak.ac.ug)';
     }
     if (!value.contains('@') || !value.contains('.')) {
       return 'Please enter a valid email address';
@@ -323,6 +325,31 @@ class _AdminLoginpageState extends State<AdminLoginpage> {
                     ),
                   ),
                   const SizedBox(height: 30),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        "Go to landing page",
+                        style: TextStyle(color: Colors.grey[600]),
+                      ),
+                      GestureDetector(
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => LandingPage(),
+                          ),
+                        ),
+                        child: Text(
+                          'Landing Page',
+                          style: TextStyle(
+                            color: Colors.green[700],
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
 
                   // Help Text
                   Container(

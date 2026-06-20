@@ -1,13 +1,12 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:uni_track/services/mobile_data_service.dart';
+import 'dart:html' as html;
 
 class ReportIssuePage extends StatefulWidget {
   final Map<String, dynamic>? userData;
@@ -24,23 +23,9 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   final _locationController = TextEditingController();
 
   final _supabase = Supabase.instance.client;
-  final _data = MobileDataService();
 
   List<Map<String, dynamic>> _categories = [];
   String? _selectedCategoryId;
-  Map<String, dynamic>? _lastAiResult;
-
-  Map<String, dynamic>? _aiSuggestion;
-  bool _isAiLoading = false;
-  String? _aiError;
-  Timer? _aiDebounceTimer;
-
-  List<Map<String, dynamic>> _offices = [];
-  String? _selectedOfficeId;
-
-  double? _gpsLatitude;
-  double? _gpsLongitude;
-  bool _isGettingLocation = false;
 
   // File attachment variables
   String? _selectedFileName;
@@ -61,30 +46,28 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   void initState() {
     super.initState();
     _fetchCategories();
-    _fetchOffices();
     _fetchSavedIssues();
-    _titleController.addListener(_onTextChanged);
-    _descriptionController.addListener(_onTextChanged);
   }
 
   @override
   void dispose() {
-    _titleController.removeListener(_onTextChanged);
-    _descriptionController.removeListener(_onTextChanged);
     _titleController.dispose();
     _descriptionController.dispose();
     _locationController.dispose();
-    _aiDebounceTimer?.cancel();
     super.dispose();
   }
 
   Future<void> _fetchCategories() async {
     setState(() => _isLoadingCategories = true);
     try {
-      final response = await _data.getCategories();
+      final response = await _supabase
+          .from('issue_categories')
+          .select('*, issue_priorities(*)')
+          .order('name', ascending: true)
+          .timeout(const Duration(seconds: 10));
       if (mounted) {
         setState(() {
-          _categories = response;
+          _categories = List<Map<String, dynamic>>.from(response);
           _isLoadingCategories = false;
         });
       }
@@ -98,15 +81,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
-  Future<void> _fetchOffices() async {
-    try {
-      final offices = await _data.getOfficesList();
-      if (mounted) {
-        setState(() => _offices = offices);
-      }
-    } catch (_) {}
-  }
-
   Future<void> _fetchSavedIssues() async {
     setState(() => _isLoadingIssues = true);
 
@@ -118,16 +92,16 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         return;
       }
 
-      final response = await _data.getComplaints(
-        studentId: studentId.toString(),
-        limit: 5,
-      );
-      final complaints =
-          List<Map<String, dynamic>>.from(response['complaints'] ?? []);
+      final response = await _supabase
+          .from('issues')
+          .select('*')
+          .eq('student_id', studentId)
+          .order('created_at', ascending: false)
+          .limit(5);
 
       if (mounted) {
         setState(() {
-          _savedIssues = complaints;
+          _savedIssues = List<Map<String, dynamic>>.from(response);
           _isLoadingIssues = false;
         });
       }
@@ -138,6 +112,41 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
+  // Web file picker
+  void _pickFileWeb() {
+    final html.FileUploadInputElement uploadInput =
+        html.FileUploadInputElement();
+    uploadInput.accept = '*/*';
+    uploadInput.multiple = false;
+
+    uploadInput.onChange.listen((e) {
+      final files = uploadInput.files;
+      if (files != null && files.isNotEmpty) {
+        final file = files[0];
+        _selectedFileName = file.name;
+        _selectedFileType = file.type;
+        _selectedFileSize = file.size;
+
+        if (_selectedFileSize! > 10 * 1024 * 1024) {
+          _showSnackBar('File size must be less than 10MB', Colors.red);
+          return;
+        }
+
+        final fileReader = html.FileReader();
+        fileReader.onLoadEnd.listen((event) {
+          setState(() {
+            _selectedFileData = fileReader.result as Uint8List?;
+          });
+          _showSnackBar('File selected: ${file.name}', Colors.green);
+        });
+        fileReader.readAsArrayBuffer(file);
+      }
+    });
+
+    uploadInput.click();
+  }
+
+  // Mobile file picker
   Future<void> _pickFileMobile() async {
     try {
       if (Platform.isAndroid) {
@@ -147,6 +156,8 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
           return;
         }
       }
+
+      final ImagePicker picker = ImagePicker();
 
       final result = await showDialog<String>(
         context: context,
@@ -177,36 +188,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
 
       if (result == null) return;
 
-      if (result == 'document') {
-        final pickedFile = await FilePicker.platform.pickFiles(
-          type: FileType.any,
-          allowMultiple: false,
-        );
-
-        if (pickedFile == null || pickedFile.files.isEmpty) return;
-
-        final file = pickedFile.files.first;
-        if (file.bytes == null) {
-          _showSnackBar('Unable to read selected file', Colors.red);
-          return;
-        }
-
-        _selectedFileName = file.name;
-        _selectedFileType = file.extension;
-        _selectedFileData = file.bytes;
-        _selectedFileSize = file.size;
-
-        if (_selectedFileSize! > 10 * 1024 * 1024) {
-          _showSnackBar('File size must be less than 10MB', Colors.red);
-          return;
-        }
-
-        setState(() {});
-        _showSnackBar('File selected: ${file.name}', Colors.green);
-        return;
-      }
-
-      final ImagePicker picker = ImagePicker();
       XFile? pickedFile;
 
       if (result == 'camera') {
@@ -236,7 +217,15 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
+  // Unified file picker
   Future<void> _pickFile() async {
+    try {
+      if (html.window != null) {
+        _pickFileWeb();
+        return;
+      }
+    } catch (e) {}
+
     await _pickFileMobile();
   }
 
@@ -295,113 +284,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     });
   }
 
-  Future<void> _getCurrentLocation() async {
-    setState(() => _isGettingLocation = true);
-    try {
-      final locationPermission = await Geolocator.requestPermission();
-      if (locationPermission == LocationPermission.denied ||
-          locationPermission == LocationPermission.deniedForever) {
-        _showSnackBar('Location permission denied', Colors.orange);
-        setState(() => _isGettingLocation = false);
-        return;
-      }
-
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-
-      if (!mounted) return;
-      setState(() {
-        _gpsLatitude = position.latitude;
-        _gpsLongitude = position.longitude;
-        _isGettingLocation = false;
-        if (_locationController.text.trim().isEmpty) {
-          _locationController.text =
-              '${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}';
-        }
-      });
-      _showSnackBar('Location obtained', Colors.green);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isGettingLocation = false);
-      _showSnackBar('Could not get location: $e', Colors.red);
-    }
-  }
-
-  void _onTextChanged() {
-    _aiDebounceTimer?.cancel();
-    _aiDebounceTimer =
-        Timer(const Duration(milliseconds: 800), _triggerAiSuggestion);
-  }
-
-  Future<void> _triggerAiSuggestion() async {
-    final title = _titleController.text.trim();
-    final description = _descriptionController.text.trim();
-    if (title.length < 5 || description.length < 20) return;
-
-    setState(() {
-      _isAiLoading = true;
-      _aiError = null;
-      _aiSuggestion = null;
-    });
-
-    try {
-      final result = await _data.suggestCategoryAndOffice(
-        title: title,
-        description: description,
-      );
-      if (!mounted) return;
-      setState(() {
-        _aiSuggestion = result;
-        _isAiLoading = false;
-        final suggestedCategoryId = result['categoryId'];
-        if (suggestedCategoryId != null) {
-          _selectedCategoryId = suggestedCategoryId.toString();
-        }
-        final suggestedOfficeId = result['officeId'];
-        if (suggestedOfficeId != null) {
-          _selectedOfficeId = suggestedOfficeId.toString();
-        }
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isAiLoading = false;
-        _aiError = e.toString();
-      });
-    }
-  }
-
-  Future<Map<String, dynamic>?> _submitIssueToMobileData({
-    required String title,
-    required String description,
-    required int categoryId,
-    int? officeId,
-    String? location,
-    double? gpsLatitude,
-    double? gpsLongitude,
-    String? attachmentUrl,
-    String? attachmentName,
-    String? attachmentType,
-    int? attachmentSize,
-  }) async {
-    final response = await _data.createComplaint(
-      studentId: widget.userData?['id']?.toString() ?? '',
-      title: title,
-      description: description,
-      categoryId: categoryId,
-      officeId: officeId,
-      location: location,
-      gpsLatitude: gpsLatitude,
-      gpsLongitude: gpsLongitude,
-      attachmentUrl: attachmentUrl,
-      attachmentName: attachmentName,
-      attachmentType: attachmentType,
-      attachmentSize: attachmentSize,
-    );
-    return response;
-  }
-
   Color _getPriorityColor(String? priorityName) {
     switch (priorityName?.toLowerCase()) {
       case 'low':
@@ -417,9 +299,8 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
-  String _getPriorityName(dynamic priorityId) {
-    final id = priorityId is int ? priorityId : int.tryParse('$priorityId');
-    switch (id) {
+  String _getPriorityName(int? priorityId) {
+    switch (priorityId) {
       case 1:
         return 'Low';
       case 2:
@@ -465,10 +346,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
       _showSnackBar('Please select an issue category', Colors.orange);
       return;
     }
-    if (_selectedOfficeId == null) {
-      _showSnackBar('Please select an office', Colors.orange);
-      return;
-    }
 
     setState(() => _isSubmitting = true);
 
@@ -488,21 +365,32 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         }
       }
 
-      final webComplaint = await _submitIssueToMobileData(
-        title: _titleController.text.trim(),
-        description: _descriptionController.text.trim(),
-        categoryId: int.parse(_selectedCategoryId!),
-        officeId: int.tryParse(_selectedOfficeId!),
-        location: _locationController.text.trim(),
-        gpsLatitude: _gpsLatitude,
-        gpsLongitude: _gpsLongitude,
-        attachmentUrl: attachmentUrl,
-        attachmentName: attachmentName,
-        attachmentType: attachmentType,
-        attachmentSize: attachmentSize,
+      final selectedCategory = _categories.firstWhere(
+        (c) => c['id'].toString() == _selectedCategoryId,
       );
+      final priority = selectedCategory['issue_priorities'];
 
-      _lastAiResult = webComplaint;
+      final issueData = {
+        'title': _titleController.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'location': _locationController.text.trim(),
+        'category_id': int.parse(_selectedCategoryId!),
+        'priority_id': priority['id'],
+        'student_id': widget.userData?['id'],
+        'student_email': widget.userData?['email'],
+        'student_name': widget.userData?['full_name'],
+        'student_phone': widget.userData?['phone'],
+        'college_id': widget.userData?['college_id'],
+        'course_id': widget.userData?['course_id'],
+        'status': 'pending',
+        'created_at': DateTime.now().toIso8601String(),
+        'attachment_url': attachmentUrl,
+        'attachment_name': attachmentName,
+        'attachment_type': attachmentType,
+        'attachment_size': attachmentSize,
+      };
+
+      await _supabase.from('issues').insert(issueData);
 
       if (mounted) {
         setState(() => _isSubmitting = false);
@@ -511,10 +399,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         _descriptionController.clear();
         _locationController.clear();
         _selectedCategoryId = null;
-        _selectedOfficeId = null;
-        _gpsLatitude = null;
-        _gpsLongitude = null;
-        _aiSuggestion = null;
         _removeFile();
         _fetchSavedIssues();
       }
@@ -599,75 +483,13 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 16),
 
-              // Description
-              TextFormField(
-                controller: _descriptionController,
-                maxLines: 5,
-                decoration: InputDecoration(
-                  labelText: 'Description *',
-                  hintText: 'Provide detailed information about the issue',
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(color: Colors.green, width: 2),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide(color: Colors.grey[300]!),
-                  ),
-                  filled: true,
-                  fillColor: Colors.grey[50],
-                ),
-                validator: (v) {
-                  if (v == null || v.trim().isEmpty)
-                    return 'Please enter issue description';
-                  if (v.length < 20)
-                    return 'Please provide more details (minimum 20 characters)';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // AI Suggestion Section
-              _buildAiSuggestionSection(),
-              const SizedBox(height: 16),
-
               // Category
-              Row(
-                children: [
-                  const Text(
-                    'Category',
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87),
-                  ),
-                  if (_aiSuggestion != null) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.indigo[100],
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.auto_awesome,
-                              size: 11, color: Colors.indigo[700]),
-                          const SizedBox(width: 3),
-                          Text('AI',
-                              style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.indigo[700])),
-                        ],
-                      ),
-                    ),
-                  ],
-                ],
+              const Text(
+                'Category',
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black87),
               ),
               const SizedBox(height: 8),
               if (_isLoadingCategories)
@@ -735,7 +557,7 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                       hint: const Text('Select issue category'),
                       isExpanded: true,
                       items: _categories.map((category) {
-                        final priority = category['priority'];
+                        final priority = category['issue_priorities'];
                         final color = _getPriorityColor(priority?['name']);
                         return DropdownMenuItem(
                           value: category['id'].toString(),
@@ -782,115 +604,11 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                 ),
               const SizedBox(height: 16),
 
-              // Office
-              Row(
-                children: [
-                  const Text(
-                    'Office',
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87),
-                  ),
-                  if (_aiSuggestion != null) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.indigo[100],
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.auto_awesome,
-                              size: 11, color: Colors.indigo[700]),
-                          const SizedBox(width: 3),
-                          Text('AI',
-                              style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.indigo[700])),
-                        ],
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 8),
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.grey[50],
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey[300]!),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButtonFormField<String>(
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      contentPadding:
-                          EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    ),
-                    value: _selectedOfficeId,
-                    hint: const Text('Select office'),
-                    isExpanded: true,
-                    items: _offices.map((office) {
-                      return DropdownMenuItem(
-                        value: office['id'].toString(),
-                        child: Text(
-                          office['name'] ?? 'Unnamed',
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                      );
-                    }).toList(),
-                    onChanged: (v) => setState(() => _selectedOfficeId = v),
-                    validator: (v) =>
-                        v == null ? 'Please select an office' : null,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // Location with GPS
-              Row(
-                children: [
-                  const Text(
-                    'Location *',
-                    style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.black87),
-                  ),
-                  const Spacer(),
-                  SizedBox(
-                    height: 32,
-                    child: TextButton.icon(
-                      onPressed:
-                          _isGettingLocation ? null : _getCurrentLocation,
-                      icon: _isGettingLocation
-                          ? const SizedBox(
-                              width: 14,
-                              height: 14,
-                              child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.my_location, size: 16),
-                      label: Text(
-                        _isGettingLocation ? 'Locating...' : 'Use GPS',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      style: TextButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        foregroundColor: Colors.indigo,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
+              // Location
               TextFormField(
                 controller: _locationController,
                 decoration: InputDecoration(
-                  labelText: 'Location description or coordinates',
+                  labelText: 'Location *',
                   hintText: 'e.g., COCIS Building, Room 301',
                   border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(12)),
@@ -902,14 +620,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                     borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide(color: Colors.grey[300]!),
                   ),
-                  suffixIcon: _gpsLatitude != null
-                      ? Tooltip(
-                          message:
-                              'Lat: ${_gpsLatitude!.toStringAsFixed(4)}, Lng: ${_gpsLongitude!.toStringAsFixed(4)}',
-                          child: Icon(Icons.location_on,
-                              color: Colors.green[600], size: 20),
-                        )
-                      : null,
                   filled: true,
                   fillColor: Colors.grey[50],
                 ),
@@ -917,13 +627,36 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                     ? 'Please enter location'
                     : null,
               ),
-              if (_gpsLatitude != null) ...[
-                const SizedBox(height: 4),
-                Text(
-                  '📍 ${_gpsLatitude!.toStringAsFixed(4)}, ${_gpsLongitude!.toStringAsFixed(4)}',
-                  style: TextStyle(fontSize: 11, color: Colors.green[700]),
+              const SizedBox(height: 16),
+
+              // Description
+              TextFormField(
+                controller: _descriptionController,
+                maxLines: 5,
+                decoration: InputDecoration(
+                  labelText: 'Description *',
+                  hintText: 'Provide detailed information about the issue',
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Colors.green, width: 2),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide(color: Colors.grey[300]!),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
                 ),
-              ],
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty)
+                    return 'Please enter issue description';
+                  if (v.length < 20)
+                    return 'Please provide more details (minimum 20 characters)';
+                  return null;
+                },
+              ),
               const SizedBox(height: 16),
 
               // File Attachment Section
@@ -1022,11 +755,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 30),
 
-              if (_lastAiResult != null) ...[
-                _buildAiResultCard(_lastAiResult!),
-                const SizedBox(height: 30),
-              ],
-
               // Saved Issues Section
               if (_isLoadingIssues)
                 const Center(
@@ -1069,300 +797,18 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     );
   }
 
-  Widget _buildAiSuggestionSection() {
-    if (_isAiLoading) {
-      return Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.blue[50],
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.blue[200]!),
-        ),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.blue[700],
-              ),
-            ),
-            const SizedBox(width: 12),
-            Text(
-              'AI is analyzing your issue...',
-              style: TextStyle(fontSize: 13, color: Colors.blue[800]),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_aiError != null) {
-      return Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: Colors.orange[50],
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.orange[200]!),
-        ),
-        child: Row(
-          children: [
-            Icon(Icons.info_outline, size: 18, color: Colors.orange[700]),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'AI suggestion unavailable. Please select a category manually.',
-                style: TextStyle(fontSize: 12, color: Colors.orange[800]),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_aiSuggestion == null) return const SizedBox.shrink();
-
-    final confidence =
-        ((_aiSuggestion!['confidence'] ?? 0) * 100).toStringAsFixed(0);
-    final categoryName = _aiSuggestion!['categoryName']?.toString() ?? 'N/A';
-    final officeName = _aiSuggestion!['officeName']?.toString() ?? 'Unassigned';
-    final reasoning = _aiSuggestion!['reasoning']?.toString();
-    final matchedKeywords =
-        (_aiSuggestion!['matchedKeywords'] as List?)?.cast<String>() ?? [];
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.indigo[50],
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.indigo[200]!),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.auto_awesome, color: Colors.indigo[700], size: 18),
-              const SizedBox(width: 8),
-              Text(
-                'AI Suggestion',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.indigo[800],
-                ),
-              ),
-              const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: Colors.indigo[100],
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Text(
-                  '$confidence% confidence',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.indigo[700],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _buildSuggestionRow(
-              Icons.category, 'Category', categoryName, Colors.indigo),
-          _buildSuggestionRow(
-              Icons.business, 'Office', officeName, Colors.indigo),
-          if (reasoning != null && reasoning.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Text(
-              reasoning,
-              style: TextStyle(
-                  fontSize: 11,
-                  color: Colors.indigo[700],
-                  fontStyle: FontStyle.italic),
-            ),
-          ],
-          if (matchedKeywords.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 4,
-              runSpacing: 4,
-              children: matchedKeywords.take(6).map((keyword) {
-                return Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.indigo[100],
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    keyword,
-                    style: TextStyle(
-                        fontSize: 10,
-                        color: Colors.indigo[700],
-                        fontWeight: FontWeight.w500),
-                  ),
-                );
-              }).toList(),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSuggestionRow(
-      IconData icon, String label, String value, MaterialColor color) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        children: [
-          Icon(icon, size: 16, color: color[600]),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 70,
-            child: Text(label,
-                style: TextStyle(
-                    fontSize: 12,
-                    color: color[700],
-                    fontWeight: FontWeight.w600)),
-          ),
-          Expanded(
-            child: Text(value,
-                style:
-                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAiResultCard(Map<String, dynamic> result) {
-    final complaint = result['complaint'] as Map<String, dynamic>? ?? {};
-    final classification = result['classification'] as Map<String, dynamic>? ??
-        complaint['classification'] as Map<String, dynamic>? ??
-        complaint['nlpResults']?['classification'] as Map<String, dynamic>?;
-    final rag = result['rag'] as Map<String, dynamic>? ??
-        complaint['rag'] as Map<String, dynamic>? ??
-        complaint['nlpResults']?['rag'] as Map<String, dynamic>?;
-    final similar = List<Map<String, dynamic>>.from(
-      result['similarComplaints'] ?? complaint['similarComplaints'] ?? [],
-    );
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.green[50],
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.green[200]!),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.auto_awesome, color: Colors.green[700]),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'AI Routing & NLP Result',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.green[800],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          _buildAiMetric(
-              'Tracking Code', complaint['trackingCode']?.toString() ?? 'N/A'),
-          _buildAiMetric(
-              'Category', complaint['category']?['name']?.toString() ?? 'N/A'),
-          _buildAiMetric('Assigned Office',
-              complaint['office']?['name']?.toString() ?? 'Unassigned'),
-          _buildAiMetric(
-              'Priority', complaint['priority']?.toString() ?? 'N/A'),
-          if (classification != null) ...[
-            _buildAiMetric('NLP Confidence',
-                '${((classification['confidence'] ?? 0) * 100).toStringAsFixed(1)}%'),
-            _buildAiMetric(
-                'NLP Method', classification['method']?.toString() ?? 'N/A'),
-          ],
-          if (rag != null) ...[
-            _buildAiMetric('RAG Confidence',
-                '${((rag['confidence'] ?? 0) * 100).toStringAsFixed(1)}%'),
-            _buildAiMetric(
-                'Routed Office',
-                rag['officeName']?.toString() ??
-                    complaint['office']?['name']?.toString() ??
-                    'N/A'),
-            Text(
-              rag['reasoning']?.toString() ??
-                  'No routing explanation available',
-              style: TextStyle(fontSize: 12, color: Colors.green[900]),
-            ),
-          ],
-          if (similar.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Similar historical complaints: ${similar.length}',
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.green[800]),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAiMetric(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 120,
-            child: Text(label,
-                style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.green[700],
-                    fontWeight: FontWeight.w600)),
-          ),
-          Expanded(
-            child: Text(value,
-                style: const TextStyle(fontSize: 12, color: Colors.black87)),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildSavedIssueCard(Map<String, dynamic> issue) {
-    dynamic priority = issue['priority'];
-    final rawPriorityName =
-        priority is Map ? priority['name']?.toString() : null;
-    final priorityName =
-        rawPriorityName ?? _getPriorityName(issue['priority_id']);
+    final priorityId = issue['priority_id'];
+    final priorityName = _getPriorityName(priorityId);
     final priorityColor = _getPriorityColor(priorityName);
     final status = issue['status']?.toString() ?? 'pending';
-    final statusColor = status.toUpperCase() == 'RESOLVED'
+    final statusColor = status == 'resolved'
         ? Colors.green
-        : status.toUpperCase() == 'PENDING' || status.toUpperCase() == 'OPEN'
+        : status == 'pending'
             ? Colors.orange
             : Colors.blue;
-    final attachments = issue['attachments'] is List
-        ? List.from(issue['attachments'])
-        : <Map<String, dynamic>>[];
-    final hasAttachment = attachments.isNotEmpty;
+    final hasAttachment = issue['attachment_url'] != null &&
+        issue['attachment_url'].toString().isNotEmpty;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),

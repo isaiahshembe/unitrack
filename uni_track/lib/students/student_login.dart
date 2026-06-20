@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:uni_track/services/mobile_data_service.dart';
+import 'package:uni_track/landindPage/landing_page.dart';
 import 'package:uni_track/students/students_mainpage.dart';
 import 'package:uni_track/students/students_register.dart';
 
@@ -28,6 +28,7 @@ class _StudentLoginState extends State<StudentLogin> {
   }
 
   Future<void> _handleLogin() async {
+    // Validate form
     if (!_formKey.currentState!.validate()) return;
 
     setState(() {
@@ -37,65 +38,32 @@ class _StudentLoginState extends State<StudentLogin> {
     try {
       final email = _emailController.text.trim();
       final password = _passwordController.text.trim();
-      Map<String, dynamic>? studentData;
 
-      try {
-        final authService = MobileDataService();
-        studentData = await authService.authenticateUser(
-          email,
-          password,
-          allowedRoles: const ['STUDENT'],
-        );
-      } catch (e) {
-        rethrow;
+      // Step 1: Sign in with Supabase Auth
+      final authResponse = await _supabase.auth.signInWithPassword(
+        email: email,
+        password: password,
+      );
+
+      if (authResponse.user == null) {
+        throw Exception('Invalid email or password');
       }
+
+      final userId = authResponse.user!.id;
+      print('🔍 User ID: $userId');
+
+      // Step 2: Get student data
+      Map<String, dynamic>? studentData = await _fetchStudentData(userId);
 
       if (studentData == null) {
-        // Step 1: Sign in with Supabase Auth fallback
-        final authResponse = await _supabase.auth.signInWithPassword(
-          email: email,
-          password: password,
-        );
-
-        if (authResponse.user == null) {
-          throw Exception('Invalid email or password');
-        }
-
-        // Step 2: Get student details (no embedded selects - students view is multi-table)
-        final response = await _supabase
-            .from('students')
-            .select()
-            .eq('id', authResponse.user!.id)
-            .single();
-
-        studentData = Map<String, dynamic>.from(response);
-
-        // Step 3: Fetch college and course separately
-        if (studentData['college_id'] != null) {
-          final college = await _supabase
-              .from('colleges')
-              .select('name')
-              .eq('id', studentData['college_id'])
-              .maybeSingle();
-          if (college != null) {
-            studentData['colleges'] = college;
-          }
-        }
-        if (studentData['course_id'] != null) {
-          final course = await _supabase
-              .from('courses')
-              .select('name, course_code, department_id')
-              .eq('id', studentData['course_id'])
-              .maybeSingle();
-          if (course != null) {
-            studentData['courses'] = course;
-            studentData['department_id'] = course['department_id'];
-          }
-        }
+        await _supabase.auth.signOut();
+        throw Exception('Student profile not found. Please register first.');
       }
 
-      final currentStudentData = studentData;
+      // Step 3: Ensure all required fields exist
+      studentData = _ensureRequiredFields(studentData);
 
+      // Success - navigate to main page
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -103,72 +71,205 @@ class _StudentLoginState extends State<StudentLogin> {
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Login successful!'),
+            content: Text('✅ Login successful!'),
             backgroundColor: Colors.green,
             duration: Duration(seconds: 2),
           ),
         );
 
-        // Navigate to main page with complete student data
         Navigator.pushReplacement(
           context,
           MaterialPageRoute(
-            builder: (c) => StudentsMainpage(userData: currentStudentData),
+            builder: (c) => StudentsMainpage(userData: studentData!),
           ),
         );
       }
     } on AuthException catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-
-        String errorMessage;
-        switch (e.message) {
-          case 'Invalid login credentials':
-            errorMessage = 'Invalid email or password. Please try again.';
-            break;
-          case 'Email not confirmed':
-            errorMessage = 'Please verify your email address first.';
-            break;
-          default:
-            errorMessage = e.message;
-        }
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(errorMessage),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
+      _handleAuthError(e);
     } on PostgrestException catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error fetching student data: ${e.message}'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
+      _handleDatabaseError(e);
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Login error: $e'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 3),
-          ),
-        );
+      _handleGenericError(e);
+    }
+  }
+
+  // Method to ensure all required fields exist in student data
+  Map<String, dynamic> _ensureRequiredFields(Map<String, dynamic> data) {
+    final Map<String, dynamic> result = Map.from(data);
+
+    // Ensure all required fields have default values if null
+    result['id'] = result['id'] ?? '';
+    result['full_name'] = result['full_name'] ?? 'Student';
+    result['student_id'] = result['student_id'] ?? 'N/A';
+    result['email'] = result['email'] ?? '';
+    result['phone'] = result['phone'] ?? 'N/A';
+    result['college_id'] = result['college_id'];
+    result['course_id'] = result['course_id'];
+
+    // College name
+    result['college_name'] =
+        result['college_name'] ?? result['colleges']?['name'] ?? 'Not Assigned';
+
+    // Course name and code
+    if (result['courses'] != null) {
+      final course = result['courses'] as Map<String, dynamic>;
+      result['course_name'] = course['name'] ?? 'Not Assigned';
+      result['course_code'] = course['course_code'] ?? 'N/A';
+      result['department_id'] = course['department_id'];
+    } else {
+      result['course_name'] = result['course_name'] ?? 'Not Assigned';
+      result['course_code'] = result['course_code'] ?? 'N/A';
+      result['department_id'] = result['department_id'];
+    }
+
+    // Department name
+    result['department_name'] = result['department_name'] ?? 'Not Assigned';
+
+    print('📊 Final student data: $result');
+    return result;
+  }
+
+  // Method to fetch student data using the view
+  Future<Map<String, dynamic>?> _fetchStudentData(String userId) async {
+    try {
+      print('📊 Fetching from student_details view...');
+      final response = await _supabase
+          .from('student_details')
+          .select('*')
+          .eq('id', userId)
+          .maybeSingle();
+
+      print('📊 View result: $response');
+
+      if (response != null) {
+        return Map<String, dynamic>.from(response);
       }
+      return null;
+    } catch (e) {
+      print('⚠️ View query failed: $e');
+      return null;
+    }
+  }
+
+  // Fallback: Direct query with relationships
+  Future<Map<String, dynamic>?> _fetchStudentDataDirect(String userId) async {
+    try {
+      print('📊 Fetching from students table directly...');
+
+      // Get student record
+      final studentResponse = await _supabase
+          .from('students')
+          .select(
+              '*, colleges(name), courses(name, course_code, department_id)')
+          .eq('id', userId)
+          .maybeSingle();
+
+      if (studentResponse == null) {
+        print('❌ No student record found');
+        return null;
+      }
+
+      print('✅ Student found: $studentResponse');
+      final studentData = Map<String, dynamic>.from(studentResponse);
+
+      // Extract college name
+      if (studentData['colleges'] != null) {
+        studentData['college_name'] = studentData['colleges']['name'];
+      }
+
+      // Extract course and department details
+      if (studentData['courses'] != null) {
+        final course = studentData['courses'] as Map<String, dynamic>;
+        studentData['course_name'] = course['name'];
+        studentData['course_code'] = course['course_code'];
+        studentData['department_id'] = course['department_id'];
+      }
+
+      return studentData;
+    } catch (e) {
+      print('❌ Direct query failed: $e');
+      return null;
+    }
+  }
+
+  // Error handling methods
+  void _handleAuthError(AuthException e) {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+
+      String errorMessage;
+      switch (e.message) {
+        case 'Invalid login credentials':
+          errorMessage = '❌ Invalid email or password. Please try again.';
+          break;
+        case 'Email not confirmed':
+          errorMessage = '📧 Please verify your email address first.';
+          break;
+        case 'User not found':
+          errorMessage = '❌ No account found with this email.';
+          break;
+        default:
+          errorMessage = '🔐 Authentication error: ${e.message}';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  void _handleDatabaseError(PostgrestException e) {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+
+      print('❌ Database error: ${e.message}');
+      print('❌ Error code: ${e.code}');
+
+      String errorMessage = '⚠️ Error fetching student data. Please try again.';
+
+      if (e.message.contains('relation') ||
+          e.message.contains('does not exist')) {
+        errorMessage =
+            '⚠️ Database configuration error. Please contact support.';
+      } else if (e.message.contains('permission denied')) {
+        errorMessage = '🔒 Permission denied. Please contact support.';
+      } else if (e.message.contains('Could not find')) {
+        errorMessage = '❌ Student profile not found. Please register first.';
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  void _handleGenericError(dynamic e) {
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+
+      print('❌ Unexpected error: $e');
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('❌ Error: $e'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
     }
   }
 
@@ -231,7 +332,7 @@ class _StudentLoginState extends State<StudentLogin> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
-                content: Text('Password reset link sent! Check your email.'),
+                content: Text('✅ Password reset link sent! Check your email.'),
                 backgroundColor: Colors.green,
                 duration: Duration(seconds: 3),
               ),
@@ -241,7 +342,7 @@ class _StudentLoginState extends State<StudentLogin> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text('Error: $e'),
+                content: Text('❌ Error: $e'),
                 backgroundColor: Colors.red,
                 duration: const Duration(seconds: 3),
               ),
@@ -253,11 +354,15 @@ class _StudentLoginState extends State<StudentLogin> {
     emailController.dispose();
   }
 
+  // Validators
   String? _validateEmail(String? value) {
     if (value == null || value.isEmpty) {
       return 'Please enter your email';
     }
-    if (!value.contains('@') || !value.contains('.')) {
+    if (!value.endsWith('@students.mak.ac.ug')) {
+      return 'Please use your Makerere University email (@students.mak.ac.ug)';
+    }
+    if (!RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$').hasMatch(value)) {
       return 'Please enter a valid email address';
     }
     return null;
@@ -290,7 +395,21 @@ class _StudentLoginState extends State<StudentLogin> {
           padding: const EdgeInsets.all(20),
           child: Column(
             children: [
-              Image.asset('images/muklogo.png', height: 300, width: 300),
+              // Logo
+              Image.asset(
+                'images/muklogo.png',
+                height: 300,
+                width: 300,
+                errorBuilder: (context, error, stackTrace) {
+                  return const Icon(
+                    Icons.school,
+                    size: 150,
+                    color: Colors.green,
+                  );
+                },
+              ),
+
+              // Title
               Text(
                 'Student Login',
                 style: TextStyle(
@@ -302,20 +421,26 @@ class _StudentLoginState extends State<StudentLogin> {
               const SizedBox(height: 8),
               Text(
                 'Welcome back! Please login to continue',
-                style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey[600],
+                ),
               ),
               const SizedBox(height: 40),
+
+              // Login Form
               Form(
                 key: _formKey,
                 child: Column(
                   children: [
+                    // Email Field
                     TextFormField(
                       controller: _emailController,
                       keyboardType: TextInputType.emailAddress,
                       decoration: InputDecoration(
-                        labelText: 'Email',
+                        labelText: 'Makerere Email',
                         labelStyle: TextStyle(color: Colors.grey[700]),
-                        hintText: 'student@example.com',
+                        hintText: 'student@students.mak.ac.ug',
                         hintStyle: TextStyle(color: Colors.grey[400]),
                         prefixIcon: Icon(Icons.email, color: Colors.green[600]),
                         border: OutlineInputBorder(
@@ -338,6 +463,8 @@ class _StudentLoginState extends State<StudentLogin> {
                       validator: _validateEmail,
                     ),
                     const SizedBox(height: 20),
+
+                    // Password Field
                     TextFormField(
                       controller: _passwordController,
                       obscureText: _obscurePassword,
@@ -376,6 +503,8 @@ class _StudentLoginState extends State<StudentLogin> {
                       validator: _validatePassword,
                     ),
                     const SizedBox(height: 10),
+
+                    // Forgot Password
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
@@ -390,6 +519,8 @@ class _StudentLoginState extends State<StudentLogin> {
                       ),
                     ),
                     const SizedBox(height: 20),
+
+                    // Login Button
                     SizedBox(
                       width: double.infinity,
                       height: 55,
@@ -422,6 +553,8 @@ class _StudentLoginState extends State<StudentLogin> {
                       ),
                     ),
                     const SizedBox(height: 20),
+
+                    // Divider
                     Row(
                       children: [
                         Expanded(
@@ -440,6 +573,8 @@ class _StudentLoginState extends State<StudentLogin> {
                       ],
                     ),
                     const SizedBox(height: 20),
+
+                    // Register Link
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -466,6 +601,31 @@ class _StudentLoginState extends State<StudentLogin> {
                       ],
                     ),
                     const SizedBox(height: 30),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          "Go to landing page",
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
+                        GestureDetector(
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => LandingPage(),
+                            ),
+                          ),
+                          child: Text(
+                            'Landing Page',
+                            style: TextStyle(
+                              color: Colors.green[700],
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),

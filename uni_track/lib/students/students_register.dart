@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:uni_track/services/mobile_data_service.dart';
 import 'package:uni_track/students/student_login.dart';
 
 class StudentsRegister extends StatefulWidget {
@@ -134,18 +133,43 @@ class _StudentsRegisterState extends State<StudentsRegister> {
       final fullName = _fullNameController.text.trim();
       final phone = _phoneController.text.trim();
 
-      final authService = MobileDataService();
-      await authService.registerStudent(
-        fullName: fullName,
+      // Step 1: Create auth user in Supabase Auth
+      final authResponse = await _supabase.auth.signUp(
         email: email,
-        registrationNumber: studentId,
-        phone: phone,
         password: password,
-        collegeId:
-            _selectedCollegeId == null ? null : int.parse(_selectedCollegeId!),
-        courseId:
-            _selectedCourseId == null ? null : int.parse(_selectedCourseId!),
+        data: {
+          'full_name': fullName,
+          'student_id': studentId,
+          'phone': phone,
+          'role': 'student',
+        },
       );
+
+      if (authResponse.user == null) {
+        throw Exception('Failed to create user account');
+      }
+
+      final userId = authResponse.user!.id;
+
+      // Step 2: Save student details to students table
+      // Use insert with explicit error handling
+      try {
+        await _supabase.from('students').insert({
+          'id': userId,
+          'full_name': fullName,
+          'student_id': studentId,
+          'email': email,
+          'phone': phone.isNotEmpty ? phone : null,
+          'college_id': int.parse(_selectedCollegeId!),
+          'course_id': int.parse(_selectedCourseId!),
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      } catch (dbError) {
+        // If database insert fails, we should still proceed since auth succeeded
+        // But log the error for debugging
+        if (dbError is PostgrestException) {}
+        rethrow; // Re-throw to show error to user
+      }
 
       if (mounted) {
         setState(() {
@@ -230,9 +254,8 @@ class _StudentsRegisterState extends State<StudentsRegister> {
 
   String? _validateEmail(String? value) {
     if (value == null || value.trim().isEmpty) return 'Please enter your email';
-    if (!value.trim().contains('@') || !value.trim().contains('.')) {
-      return 'Please enter a valid email address';
-    }
+    if (!value.trim().endsWith('@students.mak.ac.ug'))
+      return 'Please use your Makerere University email (@students.mak.ac.ug)';
     return null;
   }
 
@@ -318,9 +341,9 @@ class _StudentsRegisterState extends State<StudentsRegister> {
                     // Email
                     _buildTextField(
                       controller: _emailController,
-                      label: 'Email',
+                      label: 'Makerere Email',
                       icon: Icons.email,
-                      hintText: 'student@example.com',
+                      hintText: 'student@students.mak.ac.ug',
                       keyboardType: TextInputType.emailAddress,
                       validator: _validateEmail,
                     ),
