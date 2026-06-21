@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+
 import 'package:uni_track/administration/admin_homepage.dart';
 import 'package:uni_track/administration/admin_issuespage.dart';
 import 'package:uni_track/administration/admin_noticespage.dart';
+
 import 'package:uni_track/administration/admin_profilepage.dart';
 
 class AdminMainpage extends StatefulWidget {
@@ -40,7 +42,7 @@ class _AdminMainpageState extends State<AdminMainpage> {
 
   void _navigateToNotices() {
     setState(() {
-      _selectedIndex = 2;
+      _selectedIndex = 3;
     });
   }
 

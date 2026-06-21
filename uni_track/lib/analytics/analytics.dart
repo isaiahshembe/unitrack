@@ -1,6 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class AnalyticsPage extends StatefulWidget {
   final Map<String, dynamic> userData;
@@ -17,7 +17,7 @@ class AnalyticsPage extends StatefulWidget {
 
 class _AnalyticsPageState extends State<AnalyticsPage>
     with SingleTickerProviderStateMixin {
-  final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
   late TabController _tabController;
 
   bool _isLoading = true;
@@ -65,29 +65,40 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   Future<void> _fetchStudentAnalytics() async {
     final studentId = widget.userData['id'];
 
-    final issues = await _supabase
-        .from('issues')
-        .select('*, issue_categories(name), issue_priorities(name)')
-        .eq('student_id', studentId)
-        .order('created_at', ascending: false);
+    final response = await _data.getComplaints(
+      studentId: studentId.toString(),
+      limit: 500,
+    );
 
     final List<Map<String, dynamic>> issueList =
-        List<Map<String, dynamic>>.from(issues);
+        List<Map<String, dynamic>>.from(response['complaints'] ?? []);
 
     _totalIssues = issueList.length;
-    _resolvedCount = issueList.where((i) => i['status'] == 'resolved').length;
-    _pendingCount = issueList.where((i) => i['status'] == 'pending').length;
+    _resolvedCount = issueList
+        .where((i) => i['status']?.toString().toUpperCase() == 'RESOLVED')
+        .length;
+    _pendingCount = issueList
+        .where((i) =>
+            i['status']?.toString().toUpperCase() == 'PENDING' ||
+            i['status']?.toString().toUpperCase() == 'OPEN')
+        .length;
     _escalatedCount = issueList.where((i) => i['escalated'] == true).length;
-    _rejectedCount = issueList.where((i) => i['status'] == 'rejected').length;
-    _inProgressCount =
-        issueList.where((i) => i['status'] == 'in_progress').length;
+    _rejectedCount = issueList
+        .where((i) => i['status']?.toString().toUpperCase() == 'REJECTED')
+        .length;
+    _inProgressCount = issueList
+        .where((i) =>
+            i['status']?.toString().toUpperCase() == 'IN_PROGRESS' ||
+            i['status']?.toString().toUpperCase() == 'UNDER_REVIEW')
+        .length;
 
     _resolutionRate =
         _totalIssues > 0 ? (_resolvedCount / _totalIssues * 100).round() : 0;
 
     // Average resolution time
-    final resolvedIssues =
-        issueList.where((i) => i['status'] == 'resolved').toList();
+    final resolvedIssues = issueList
+        .where((i) => i['status']?.toString().toUpperCase() == 'RESOLVED')
+        .toList();
     double avgDays = 0;
     if (resolvedIssues.isNotEmpty) {
       for (var issue in resolvedIssues) {
@@ -104,7 +115,9 @@ class _AnalyticsPageState extends State<AnalyticsPage>
     // Priority breakdown
     final Map<String, int> priorityMap = {};
     for (var issue in issueList) {
-      final p = issue['issue_priorities']?['name']?.toString() ?? 'Unknown';
+      final p = issue['priority']?['name']?.toString() ??
+          issue['issue_priorities']?['name']?.toString() ??
+          'Unknown';
       priorityMap[p] = (priorityMap[p] ?? 0) + 1;
     }
     _priorityBreakdown = priorityMap;
@@ -112,7 +125,9 @@ class _AnalyticsPageState extends State<AnalyticsPage>
     // Category breakdown
     final Map<String, int> categoryMap = {};
     for (var issue in issueList) {
-      final cat = issue['issue_categories']?['name']?.toString() ?? 'Other';
+      final cat = issue['category']?['name']?.toString() ??
+          issue['issue_categories']?['name']?.toString() ??
+          'Other';
       categoryMap[cat] = (categoryMap[cat] ?? 0) + 1;
     }
     _categoryData = categoryMap.entries
@@ -134,7 +149,7 @@ class _AnalyticsPageState extends State<AnalyticsPage>
           };
         }
         monthMap[key]!['total'] = (monthMap[key]!['total'] ?? 0) + 1;
-        if (issue['status'] == 'resolved') {
+        if (issue['status']?.toString().toUpperCase() == 'RESOLVED') {
           monthMap[key]!['resolved'] = (monthMap[key]!['resolved'] ?? 0) + 1;
         }
       }
@@ -144,24 +159,32 @@ class _AnalyticsPageState extends State<AnalyticsPage>
   }
 
   Future<void> _fetchAdminAnalytics() async {
-    final adminId = widget.userData['id'];
-
-    final issues = await _supabase
-        .from('issues')
-        .select('*, issue_categories(name), issue_priorities(name)')
-        .eq('assigned_admin_id', adminId)
-        .order('created_at', ascending: false);
+    final response = await _data.getAdminComplaints(
+      limit: 500,
+      adminData: widget.userData,
+    );
 
     final List<Map<String, dynamic>> issueList =
-        List<Map<String, dynamic>>.from(issues);
+        List<Map<String, dynamic>>.from(response['complaints'] ?? []);
 
     _totalIssues = issueList.length;
-    _resolvedCount = issueList.where((i) => i['status'] == 'resolved').length;
-    _pendingCount = issueList.where((i) => i['status'] == 'pending').length;
+    _resolvedCount = issueList
+        .where((i) => i['status']?.toString().toUpperCase() == 'RESOLVED')
+        .length;
+    _pendingCount = issueList
+        .where((i) =>
+            i['status']?.toString().toUpperCase() == 'PENDING' ||
+            i['status']?.toString().toUpperCase() == 'OPEN')
+        .length;
     _escalatedCount = issueList.where((i) => i['escalated'] == true).length;
-    _rejectedCount = issueList.where((i) => i['status'] == 'rejected').length;
-    _inProgressCount =
-        issueList.where((i) => i['status'] == 'in_progress').length;
+    _rejectedCount = issueList
+        .where((i) => i['status']?.toString().toUpperCase() == 'REJECTED')
+        .length;
+    _inProgressCount = issueList
+        .where((i) =>
+            i['status']?.toString().toUpperCase() == 'IN_PROGRESS' ||
+            i['status']?.toString().toUpperCase() == 'UNDER_REVIEW')
+        .length;
 
     _responseRate = _totalIssues > 0
         ? (((_resolvedCount + _rejectedCount + _inProgressCount) /
@@ -171,8 +194,11 @@ class _AnalyticsPageState extends State<AnalyticsPage>
         : 0;
 
     // Average response time
-    final respondedIssues =
-        issueList.where((i) => i['status'] != 'pending').toList();
+    final respondedIssues = issueList
+        .where((i) =>
+            i['status']?.toString().toUpperCase() != 'PENDING' &&
+            i['status']?.toString().toUpperCase() != 'OPEN')
+        .toList();
     double avgResponse = 0;
     if (respondedIssues.isNotEmpty) {
       for (var issue in respondedIssues) {
@@ -189,7 +215,9 @@ class _AnalyticsPageState extends State<AnalyticsPage>
     // Category breakdown
     final Map<String, int> categoryMap = {};
     for (var issue in issueList) {
-      final cat = issue['issue_categories']?['name']?.toString() ?? 'Other';
+      final cat = issue['category']?['name']?.toString() ??
+          issue['issue_categories']?['name']?.toString() ??
+          'Other';
       categoryMap[cat] = (categoryMap[cat] ?? 0) + 1;
     }
     _categoryData = categoryMap.entries
@@ -211,7 +239,7 @@ class _AnalyticsPageState extends State<AnalyticsPage>
           };
         }
         monthMap[key]!['total'] = (monthMap[key]!['total'] ?? 0) + 1;
-        if (issue['status'] == 'resolved') {
+        if (issue['status']?.toString().toUpperCase() == 'RESOLVED') {
           monthMap[key]!['resolved'] = (monthMap[key]!['resolved'] ?? 0) + 1;
         }
       }

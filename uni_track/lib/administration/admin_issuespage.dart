@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uni_track/analytics/analytics.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'dart:html' as html;
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class AdminIssuesPage extends StatefulWidget {
   final Map<String, dynamic> adminData;
@@ -14,74 +14,149 @@ class AdminIssuesPage extends StatefulWidget {
 
 class _AdminIssuesPageState extends State<AdminIssuesPage> {
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
   List<Map<String, dynamic>> _issues = [];
   List<Map<String, dynamic>> _filteredIssues = [];
   bool _isLoading = true;
   String? _errorMessage;
   String _selectedFilter = 'All';
   Map<String, bool> _expandedStates = {};
+  Map<String, dynamic>? _adminOffice;
 
   @override
   void initState() {
     super.initState();
-    _fetchAssignedIssues();
+    _fetchAdminOffice();
   }
 
-  Future<void> _fetchAssignedIssues() async {
+  Future<void> _fetchAdminOffice() async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      // Check escalations first
-      try {
-        await _supabase.rpc('check_and_escalate_issues');
-      } catch (e) {}
+      final assignment = await _supabase
+          .from('office_assignments')
+          .select('*, offices(*)')
+          .eq('admin_id', widget.adminData['id'])
+          .maybeSingle();
 
-      final adminOfficeId = widget.adminData['office_id'];
-
-      List<Map<String, dynamic>> response;
-
-      if (adminOfficeId != null) {
-        // Explicitly select all fields including attachments
-        response = await _supabase
-            .from('issues')
-            .select('''
-              id, title, description, location, status, escalated, 
-              escalation_level, max_escalation_level, created_at, updated_at,
-              escalated_at, last_escalated_at, student_id, assigned_office_id, 
-              assigned_admin_id, category_id, priority_id, student_email, 
-              student_name, student_phone, college_id, course_id, rejection_reason,
-              rejected_at, rejected_by_name, should_escalate, original_office_id,
-              attachment_url, attachment_name, attachment_type, attachment_size,
-              issue_categories(id, name),
-              issue_priorities(id, name, days_to_resolve)
-            ''')
-            .eq('assigned_office_id', adminOfficeId)
-            .order('created_at', ascending: false)
-            .timeout(const Duration(seconds: 10));
-      } else {
-        response = await _supabase
-            .from('issues')
-            .select('''
-              id, title, description, location, status, escalated, 
-              escalation_level, max_escalation_level, created_at, updated_at,
-              escalated_at, last_escalated_at, student_id, assigned_office_id, 
-              assigned_admin_id, category_id, priority_id, student_email, 
-              student_name, student_phone, college_id, course_id, rejection_reason,
-              rejected_at, rejected_by_name, should_escalate, original_office_id,
-              attachment_url, attachment_name, attachment_type, attachment_size,
-              issue_categories(id, name),
-              issue_priorities(id, name, days_to_resolve)
-            ''')
-            .eq('assigned_admin_id', widget.adminData['id'])
-            .order('created_at', ascending: false)
-            .timeout(const Duration(seconds: 10));
+      if (assignment == null) {
+        if (mounted) {
+          setState(() {
+            _issues = [];
+            _filteredIssues = [];
+            _isLoading = false;
+            _errorMessage =
+                'No office assigned to you. Please contact administrator.';
+          });
+        }
+        return;
       }
 
-      await _enrichIssuesWithDetails(response);
+      setState(() {
+        _adminOffice = Map<String, dynamic>.from(assignment['offices'] ?? {});
+      });
+
+      await _fetchAssignedIssues();
     } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Failed to load office assignment: $e';
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _fetchAssignedIssues() async {
+    if (_adminOffice == null) return;
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final officeId = _adminOffice!['id'];
+
+      // FIX: Use explicit relationship names to avoid ambiguity
+      // Use assigned_office!inner to join on assigned_office_id
+      final response = await _supabase
+          .from('issues')
+          .select('''
+            *,
+            issue_categories (
+              id,
+              name,
+              description
+            ),
+            issue_priorities (
+              id,
+              name,
+              days_to_resolve
+            ),
+            assigned_office:offices!issues_assigned_office_id_fkey (
+              id,
+              name,
+              level,
+              building,
+              room_number
+            ),
+            original_office:offices!issues_original_office_id_fkey (
+              id,
+              name,
+              level
+            ),
+            students (
+              id,
+              full_name,
+              email,
+              phone,
+              student_id
+            )
+          ''')
+          .eq('assigned_office_id', officeId)
+          .order('created_at', ascending: false);
+
+      final issues = List<Map<String, dynamic>>.from(response);
+
+      final processedIssues = issues.map((issue) {
+        final processed = Map<String, dynamic>.from(issue);
+
+        // Rename assigned_office to offices for compatibility
+        if (processed['assigned_office'] != null) {
+          processed['offices'] = processed['assigned_office'];
+        }
+
+        if (processed['students'] != null) {
+          processed['student_info'] = processed['students'];
+        }
+
+        if (processed['escalation_level'] != null &&
+            processed['escalation_level'] > 0) {
+          processed['escalated'] = true;
+        } else {
+          processed['escalated'] = false;
+        }
+
+        return processed;
+      }).toList();
+
+      if (mounted) {
+        setState(() {
+          _issues = processedIssues;
+          _filterIssues(_selectedFilter);
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print('═══════════════════════════════════════════════════════════');
+      print('ERROR FETCHING ISSUES:');
+      print(e);
+      print('═══════════════════════════════════════════════════════════');
+
       if (mounted) {
         setState(() {
           _errorMessage = 'Failed to load issues: $e';
@@ -91,91 +166,22 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     }
   }
 
-  Future<void> _enrichIssuesWithDetails(
-      List<Map<String, dynamic>> response) async {
-    final List<Map<String, dynamic>> enrichedIssues = [];
-
-    for (var issue in response) {
-      Map<String, dynamic> enriched = Map<String, dynamic>.from(issue);
-
-      // Debug - check if attachment exists
-      final hasAttachment = issue['attachment_url'] != null &&
-          issue['attachment_url'].toString().isNotEmpty;
-
-      if (hasAttachment) {
-      } else {}
-
-      // Fetch office info
-      if (issue['assigned_office_id'] != null) {
-        try {
-          final officeData = await _supabase
-              .from('offices')
-              .select('name, building, room_number, level')
-              .eq('id', issue['assigned_office_id'])
-              .maybeSingle();
-          enriched['offices'] = officeData;
-        } catch (e) {}
-      }
-
-      // Fetch original office
-      if (issue['original_office_id'] != null) {
-        try {
-          final originalOfficeData = await _supabase
-              .from('offices')
-              .select('name, level')
-              .eq('id', issue['original_office_id'])
-              .maybeSingle();
-          enriched['original_office'] = originalOfficeData;
-        } catch (e) {}
-      }
-
-      // Fetch student info
-      if (issue['student_id'] != null) {
-        try {
-          final studentData = await _supabase
-              .from('students')
-              .select('full_name, email, student_id, phone')
-              .eq('id', issue['student_id'])
-              .maybeSingle();
-          enriched['student_info'] = studentData;
-        } catch (e) {}
-      }
-
-      // Fetch escalation history
-      try {
-        final historyData = await _supabase
-            .from('escalation_history')
-            .select(
-                '*, from_office:offices!from_office_id(name, level), to_office:offices!to_office_id(name, level)')
-            .eq('issue_id', issue['id'])
-            .order('escalated_at', ascending: true);
-        enriched['escalation_history'] = historyData;
-      } catch (e) {}
-
-      enrichedIssues.add(enriched);
-    }
-
-    if (mounted) {
-      setState(() {
-        _issues = enrichedIssues;
-        _filterIssues(_selectedFilter);
-        _isLoading = false;
-      });
-    }
-  }
-
   void _filterIssues(String filter) {
     setState(() {
       _selectedFilter = filter;
       if (filter == 'All') {
         _filteredIssues = List.from(_issues);
       } else if (filter == 'Escalated') {
-        _filteredIssues = _issues.where((i) => i['escalated'] == true).toList();
+        _filteredIssues = _issues
+            .where((i) =>
+                i['escalated'] == true ||
+                (i['escalation_level'] != null && i['escalation_level'] > 0))
+            .toList();
       } else {
+        final filterUpper = filter.toUpperCase();
         _filteredIssues = _issues
             .where(
-              (i) =>
-                  i['status']?.toString().toLowerCase() == filter.toLowerCase(),
+              (i) => i['status']?.toString().toUpperCase() == filterUpper,
             )
             .toList();
       }
@@ -213,6 +219,12 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     final currentOffice = issue['offices'];
     final currentLevel = currentOffice?['level'] ?? 0;
     final nextLevel = currentLevel + 1;
+
+    final maxEscalation = issue['max_escalation_level'] ?? 3;
+    if (currentLevel >= maxEscalation) {
+      _showSnackBar('Issue already at maximum escalation level', Colors.orange);
+      return;
+    }
 
     final higherOffice = await _supabase
         .from('offices')
@@ -258,23 +270,22 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
 
     if (confirm == true) {
       try {
-        final newEscalationLevel = (issue['escalation_level'] ?? 0) + 1;
-
         await _supabase.from('issues').update({
           'assigned_office_id': higherOffice['id'],
+          'escalation_level': nextLevel,
           'escalated': true,
-          'escalation_level': newEscalationLevel,
-          'last_escalated_at': DateTime.now().toIso8601String(),
-          'status': 'escalated',
+          'escalated_at': DateTime.now().toIso8601String(),
+          'status': 'pending',
         }).eq('id', issue['id']);
 
-        await _supabase.from('escalation_history').insert({
+        await _supabase.from('issue_escalations').insert({
           'issue_id': issue['id'],
           'from_office_id': currentOffice?['id'],
           'to_office_id': higherOffice['id'],
+          'escalation_level': nextLevel,
+          'escalated_by': widget.adminData['id'],
           'escalated_at': DateTime.now().toIso8601String(),
-          'escalation_level': newEscalationLevel,
-          'reason': 'Escalated by ${widget.adminData['full_name']}',
+          'reason': 'Escalated by admin for further action',
         });
 
         _showSnackBar(
@@ -355,7 +366,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     if (result == true && controller.text.trim().isNotEmpty) {
       try {
         await _supabase.from('issue_comments').insert({
-          'issue_id': int.parse(issueId),
+          'issue_id': issueId,
           'admin_id': widget.adminData['id'],
           'admin_name': widget.adminData['full_name'],
           'comment': controller.text.trim(),
@@ -371,11 +382,13 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
 
   Future<void> _viewComments(String issueId, String issueTitle) async {
     try {
-      final comments = await _supabase
+      final response = await _supabase
           .from('issue_comments')
           .select('*')
-          .eq('issue_id', int.parse(issueId))
+          .eq('issue_id', issueId)
           .order('created_at', ascending: false);
+
+      final comments = List<Map<String, dynamic>>.from(response);
 
       if (!mounted) return;
 
@@ -515,28 +528,28 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     }
   }
 
-  void _downloadFile(String url, String fileName) {
+  Future<void> _downloadFile(String url, String fileName) async {
     if (url.isEmpty) {
       _showSnackBar('No attachment available', Colors.orange);
       return;
     }
 
     try {
-      final anchor = html.AnchorElement(href: url);
-      anchor.download = fileName;
-      anchor.style.display = 'none';
-      html.document.body?.append(anchor);
-      anchor.click();
-      anchor.remove();
-      _showSnackBar('Download started: $fileName', Colors.green);
+      final uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        _showSnackBar('Cannot download this file', Colors.red);
+      }
     } catch (e) {
-      html.window.open(url, '_blank');
-      _showSnackBar('Opening file in new tab', Colors.blue);
+      _showSnackBar('Error downloading attachment: $e', Colors.red);
     }
   }
 
   Widget _buildCommentBubble(Map<String, dynamic> comment) {
     final isAdmin = comment['admin_id'] != null;
+    final name = comment['admin_name'] ?? comment['student_name'] ?? 'Student';
+    final text = comment['comment'] ?? '';
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       child: Column(
@@ -553,7 +566,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  comment['admin_name'] ?? comment['student_name'] ?? 'Unknown',
+                  name,
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
@@ -561,8 +574,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(comment['comment'] ?? '',
-                    style: const TextStyle(fontSize: 14)),
+                Text(text, style: const TextStyle(fontSize: 14)),
               ],
             ),
           ),
@@ -635,7 +647,9 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
   bool _canPerformActions(Map<String, dynamic> issue) {
     final status = issue['status']?.toString() ?? '';
     final isEscalated = issue['escalated'] == true;
-    return !isEscalated && status != 'resolved' && status != 'rejected';
+    return !isEscalated &&
+        status.toUpperCase() != 'RESOLVED' &&
+        status.toUpperCase() != 'REJECTED';
   }
 
   Color _getPriorityColor(String? name) {
@@ -672,10 +686,13 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     if (isEscalated) return Colors.purple;
     switch (status?.toLowerCase()) {
       case 'resolved':
+      case 'resolve':
         return Colors.green;
       case 'in_progress':
+      case 'under_review':
         return Colors.blue;
       case 'pending':
+      case 'open':
         return Colors.orange;
       case 'rejected':
         return Colors.red;
@@ -687,10 +704,13 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
   IconData _getStatusIcon(String status) {
     switch (status.toLowerCase()) {
       case 'resolved':
+      case 'resolve':
         return Icons.check_circle;
       case 'in_progress':
+      case 'under_review':
         return Icons.play_circle;
       case 'pending':
+      case 'open':
         return Icons.hourglass_empty;
       case 'rejected':
         return Icons.cancel;
@@ -780,6 +800,45 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
       ),
       body: Column(
         children: [
+          if (_adminOffice != null)
+            Container(
+              margin: const EdgeInsets.all(15),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green[50],
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.green[200]!),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.business_center, color: Colors.green[700]),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Office: ${_adminOffice!['name'] ?? 'Unknown'}',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green[700],
+                          ),
+                        ),
+                        if (_adminOffice!['level'] != null)
+                          Text(
+                            'Level: ${_adminOffice!['level']}',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.green[600],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Container(
             padding: const EdgeInsets.all(15),
             child: Row(
@@ -837,7 +896,7 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
                             Text(_errorMessage!,
                                 style: TextStyle(color: Colors.red[600])),
                             ElevatedButton(
-                              onPressed: _fetchAssignedIssues,
+                              onPressed: _fetchAdminOffice,
                               style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.green),
                               child: const Text('Retry'),
@@ -847,16 +906,36 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
                       )
                     : _filteredIssues.isEmpty
                         ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.inbox_outlined,
-                                    size: 80, color: Colors.grey[400]),
-                                const SizedBox(height: 16),
-                                Text('No issues assigned',
+                            child: SingleChildScrollView(
+                              physics: const NeverScrollableScrollPhysics(),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.inbox_outlined,
+                                    size: 80,
+                                    color: Colors.grey[400],
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    'No issues assigned',
                                     style: TextStyle(
-                                        fontSize: 18, color: Colors.grey[600])),
-                              ],
+                                      fontSize: 18,
+                                      color: Colors.grey[600],
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    'Issues assigned to your office will appear here',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey[500],
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ],
+                              ),
                             ),
                           )
                         : RefreshIndicator(
@@ -864,8 +943,70 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
                             child: ListView.builder(
                               padding: const EdgeInsets.all(15),
                               itemCount: _filteredIssues.length,
-                              itemBuilder: (context, index) =>
-                                  _buildIssueCard(_filteredIssues[index]),
+                              itemBuilder: (context, index) {
+                                try {
+                                  return _buildIssueCard(
+                                      _filteredIssues[index]);
+                                } catch (e, stackTrace) {
+                                  print(
+                                      '═══════════════════════════════════════════════════════════');
+                                  print(
+                                      'ERROR BUILDING ISSUE CARD AT INDEX $index');
+                                  print('Error: $e');
+                                  print('Stack Trace:');
+                                  print(stackTrace);
+                                  print(
+                                      '═══════════════════════════════════════════════════════════');
+
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    padding: const EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: Colors.red[50],
+                                      borderRadius: BorderRadius.circular(16),
+                                      border:
+                                          Border.all(color: Colors.red[200]!),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Icon(Icons.error_outline,
+                                                color: Colors.red[700]),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                'Error loading issue',
+                                                style: TextStyle(
+                                                  color: Colors.red[700],
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          'Issue ID: ${_filteredIssues[index]['id']}',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.red[600],
+                                          ),
+                                        ),
+                                        Text(
+                                          'Error: $e',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.red[600],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }
+                              },
                             ),
                           ),
           ),
@@ -925,241 +1066,239 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
   }
 
   Widget _buildIssueCard(Map<String, dynamic> issue) {
-    final category = issue['issue_categories'] as Map<String, dynamic>?;
-    final priority = issue['issue_priorities'] as Map<String, dynamic>?;
-    final priorityName = priority?['name']?.toString() ?? 'N/A';
-    final priorityColor = _getPriorityColor(priorityName);
-    final status = issue['status']?.toString() ?? 'pending';
-    final isEscalated = issue['escalated'] == true;
-    final escalationLevel = issue['escalation_level'] ?? 0;
-    final statusColor = _getStatusColor(status, isEscalated);
-    final studentInfo = issue['student_info'] as Map<String, dynamic>?;
-    final studentName = studentInfo?['full_name']?.toString() ??
-        issue['student_name']?.toString() ??
-        'Unknown';
+    try {
+      final category = issue['issue_categories'] as Map<String, dynamic>?;
+      final priority = issue['issue_priorities'] as Map<String, dynamic>?;
+      final priorityName = priority?['name']?.toString() ?? 'N/A';
+      final priorityColor = _getPriorityColor(priorityName);
+      final status = issue['status']?.toString() ?? 'pending';
+      final isEscalated = issue['escalated'] == true;
+      final escalationLevel = issue['escalation_level'] ?? 0;
+      final statusColor = _getStatusColor(status, isEscalated);
+      final studentInfo = issue['student_info'] as Map<String, dynamic>?;
+      final studentName = studentInfo?['full_name']?.toString() ??
+          issue['student_name']?.toString() ??
+          'Unknown';
 
-    // Check for attachment - handle null values properly
-    final hasAttachment = issue['attachment_url'] != null &&
-        issue['attachment_url'].toString().isNotEmpty;
+      final hasAttachment = issue['attachment_url'] != null &&
+          issue['attachment_url'].toString().isNotEmpty;
+      final attachmentUrl = issue['attachment_url'] ?? '';
+      final attachmentName = issue['attachment_name'] ?? 'Attachment';
+      final attachmentType = issue['attachment_type'];
+      final attachmentSize = issue['attachment_size'];
 
-    final attachmentUrl = issue['attachment_url'] ?? '';
-    final attachmentName = issue['attachment_name'] ?? 'Attachment';
-    final attachmentType = issue['attachment_type'];
-    final attachmentSize = issue['attachment_size'];
+      final canAct = _canPerformActions(issue);
 
-    final escalationHistory = issue['escalation_history'] as List? ?? [];
-    final originalOffice = issue['original_office'] as Map<String, dynamic>?;
-    final currentOffice = issue['offices'] as Map<String, dynamic>?;
-    final isFromDifferentOffice = originalOffice != null &&
-        currentOffice != null &&
-        originalOffice['id'] != currentOffice['id'];
-    final canAct = _canPerformActions(issue);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-            color: isEscalated
-                ? Colors.purple.withOpacity(0.5)
-                : Colors.grey[200]!,
-            width: isEscalated ? 2 : 1),
-        boxShadow: [
-          BoxShadow(
-              color: Colors.grey[100]!,
-              blurRadius: 8,
-              offset: const Offset(0, 3))
-        ],
-      ),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () => _toggleExpand(issue),
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
           borderRadius: BorderRadius.circular(16),
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            issue['title']?.toString() ?? 'Untitled',
-                            style: const TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+          border: Border.all(
+              color: isEscalated
+                  ? Colors.purple.withOpacity(0.5)
+                  : Colors.grey[200]!,
+              width: isEscalated ? 2 : 1),
+          boxShadow: [
+            BoxShadow(
+                color: Colors.grey[100]!,
+                blurRadius: 8,
+                offset: const Offset(0, 3))
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => _toggleExpand(issue),
+            borderRadius: BorderRadius.circular(16),
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              issue['title']?.toString() ?? 'Untitled',
+                              style: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.bold),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: priorityColor.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                                color: priorityColor.withOpacity(0.3)),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(_getPriorityIcon(priorityName),
-                                  style: const TextStyle(fontSize: 12)),
-                              const SizedBox(width: 4),
-                              Text(priorityName.toUpperCase(),
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: priorityColor)),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: statusColor.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(_getStatusIcon(status),
-                                  size: 14, color: statusColor),
-                              const SizedBox(width: 4),
-                              Text(status.toUpperCase().replaceAll('_', ' '),
-                                  style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                      color: statusColor)),
-                            ],
-                          ),
-                        ),
-                        if (isEscalated) ...[
-                          const SizedBox(width: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 10, vertical: 4),
                             decoration: BoxDecoration(
-                              color: Colors.purple.withOpacity(0.1),
+                              color: priorityColor.withOpacity(0.1),
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                  color: Colors.purple.withOpacity(0.3)),
+                                  color: priorityColor.withOpacity(0.3)),
                             ),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(Icons.trending_up,
-                                    size: 12, color: Colors.purple),
+                                Text(_getPriorityIcon(priorityName),
+                                    style: const TextStyle(fontSize: 12)),
                                 const SizedBox(width: 4),
-                                Text('ESCALATED L$escalationLevel',
-                                    style: const TextStyle(
+                                Text(priorityName.toUpperCase(),
+                                    style: TextStyle(
                                         fontSize: 10,
                                         fontWeight: FontWeight.bold,
-                                        color: Colors.purple)),
+                                        color: priorityColor)),
                               ],
                             ),
                           ),
                         ],
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-
-                    // Attachment Badge - Only show if attachment exists
-                    if (hasAttachment)
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.blue[200]!),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(_getFileIcon(attachmentType),
-                                size: 14, color: Colors.blue[700]),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                attachmentName,
-                                style: TextStyle(
-                                    fontSize: 11, color: Colors.blue[700]),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: statusColor.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(_getStatusIcon(status),
+                                    size: 14, color: statusColor),
+                                const SizedBox(width: 4),
+                                Text(status.toUpperCase().replaceAll('_', ' '),
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        color: statusColor)),
+                              ],
+                            ),
+                          ),
+                          if (isEscalated) ...[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.purple.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                    color: Colors.purple.withOpacity(0.3)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.trending_up,
+                                      size: 12, color: Colors.purple),
+                                  const SizedBox(width: 4),
+                                  Text('ESCALATED L$escalationLevel',
+                                      style: const TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.purple)),
+                                ],
                               ),
                             ),
                           ],
-                        ),
+                        ],
                       ),
-
-                    Row(
-                      children: [
-                        CircleAvatar(
-                            radius: 14,
-                            backgroundColor: Colors.grey[200],
-                            child: const Icon(Icons.person,
-                                size: 16, color: Colors.grey)),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                      const SizedBox(height: 10),
+                      if (hasAttachment)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue[200]!),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(studentName,
-                                  style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w500)),
-                              Text(_getDaysAgo(issue['created_at']?.toString()),
+                              Icon(_getFileIcon(attachmentType),
+                                  size: 14, color: Colors.blue[700]),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  attachmentName,
                                   style: TextStyle(
-                                      fontSize: 11, color: Colors.grey[500])),
+                                      fontSize: 11, color: Colors.blue[700]),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
                             ],
                           ),
                         ),
-                        Icon(Icons.chevron_right,
-                            color: Colors.grey[400], size: 20),
-                      ],
-                    ),
-                  ],
+                      Row(
+                        children: [
+                          CircleAvatar(
+                              radius: 14,
+                              backgroundColor: Colors.grey[200],
+                              child: const Icon(Icons.person,
+                                  size: 16, color: Colors.grey)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(studentName,
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500)),
+                                Text(
+                                    _getDaysAgo(
+                                        issue['created_at']?.toString()),
+                                    style: TextStyle(
+                                        fontSize: 11, color: Colors.grey[500])),
+                              ],
+                            ),
+                          ),
+                          Icon(Icons.chevron_right,
+                              color: Colors.grey[400], size: 20),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              AnimatedCrossFade(
-                firstChild: const SizedBox(height: 0),
-                secondChild: _buildExpandedContent(
-                    issue,
-                    studentName,
-                    studentInfo,
-                    category,
-                    priorityName,
-                    canAct,
-                    isFromDifferentOffice,
-                    originalOffice,
-                    currentOffice,
-                    escalationHistory,
-                    hasAttachment,
-                    attachmentUrl,
-                    attachmentName,
-                    attachmentType,
-                    attachmentSize),
-                crossFadeState: _isExpanded(issue)
-                    ? CrossFadeState.showSecond
-                    : CrossFadeState.showFirst,
-                duration: const Duration(milliseconds: 200),
-              ),
-            ],
+                AnimatedCrossFade(
+                  firstChild: const SizedBox(height: 0),
+                  secondChild: _buildExpandedContent(
+                      issue,
+                      studentName,
+                      studentInfo,
+                      category,
+                      priority,
+                      priorityName,
+                      canAct,
+                      hasAttachment,
+                      attachmentUrl,
+                      attachmentName,
+                      attachmentType,
+                      attachmentSize),
+                  crossFadeState: _isExpanded(issue)
+                      ? CrossFadeState.showSecond
+                      : CrossFadeState.showFirst,
+                  duration: const Duration(milliseconds: 200),
+                ),
+              ],
+            ),
           ),
         ),
-      ),
-    );
+      );
+    } catch (e, stackTrace) {
+      print('═══════════════════════════════════════════════════════════');
+      print('ERROR IN _buildIssueCard');
+      print('Error: $e');
+      print('Stack Trace:');
+      print(stackTrace);
+      print('═══════════════════════════════════════════════════════════');
+      rethrow;
+    }
   }
 
   Widget _buildExpandedContent(
@@ -1167,91 +1306,31 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
     String studentName,
     Map<String, dynamic>? studentInfo,
     Map<String, dynamic>? category,
+    Map<String, dynamic>? priority,
     String priorityName,
     bool canAct,
-    bool isFromDifferentOffice,
-    Map<String, dynamic>? originalOffice,
-    Map<String, dynamic>? currentOffice,
-    List escalationHistory,
     bool hasAttachment,
     String attachmentUrl,
     String attachmentName,
     String? attachmentType,
     int? attachmentSize,
   ) {
-    final status = issue['status']?.toString() ?? 'pending';
-    final escalationLevel = issue['escalation_level'] ?? 0;
-    final maxEscalation = issue['max_escalation_level'] ?? 5;
+    try {
+      final status = issue['status']?.toString() ?? 'pending';
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey[50],
-        borderRadius: const BorderRadius.only(
-            bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (isFromDifferentOffice)
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: const BorderRadius.only(
+              bottomLeft: Radius.circular(16),
+              bottomRight: Radius.circular(16)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Container(
-              padding: const EdgeInsets.all(12),
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                    colors: [Colors.purple[50]!, Colors.purple[100]!]),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.purple[200]!),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                            color: Colors.purple[100],
-                            borderRadius: BorderRadius.circular(8)),
-                        child: Icon(Icons.swap_horiz,
-                            color: Colors.purple[700], size: 20),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text('Issue Escalated From Another Office',
-                                style: TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.purple[800])),
-                            Text(
-                                'Originally from: ${originalOffice?['name'] ?? 'Unknown'} (Level ${originalOffice?['level'] ?? '?'})',
-                                style: TextStyle(
-                                    fontSize: 11, color: Colors.purple[600])),
-                            Text(
-                                'Currently at: ${currentOffice?['name'] ?? 'Unknown'} (Level ${currentOffice?['level'] ?? '?'})',
-                                style: TextStyle(
-                                    fontSize: 11, color: Colors.purple[600])),
-                            Text(
-                                'Escalation Level: $escalationLevel of $maxEscalation',
-                                style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.purple[700])),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          if (escalationHistory.isNotEmpty)
-            Container(
-              padding: const EdgeInsets.all(12),
-              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(12),
@@ -1260,125 +1339,57 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('ESCALATION HISTORY',
+                  const Text('ISSUE DETAILS',
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.bold,
-                          color: Colors.grey)),
+                          color: Colors.grey,
+                          letterSpacing: 0.5)),
+                  const SizedBox(height: 12),
+                  _buildDetailRow('Category',
+                      category?['name']?.toString() ?? 'N/A', Icons.category),
                   const SizedBox(height: 8),
-                  ...escalationHistory.map((history) => Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Row(
-                          children: [
-                            Icon(Icons.arrow_forward,
-                                size: 12, color: Colors.purple),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                      'Escalated to Level ${history['escalation_level']}',
-                                      style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w500)),
-                                  Text(
-                                      'From: ${history['from_office']?['name'] ?? 'Unknown'} → To: ${history['to_office']?['name'] ?? 'Unknown'}',
-                                      style: TextStyle(
-                                          fontSize: 11,
-                                          color: Colors.grey[600])),
-                                  Text(_formatDate(history['escalated_at']),
-                                      style: TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.grey[500])),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      )),
-                ],
-              ),
-            ),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.grey[200]!),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('ISSUE DETAILS',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey,
-                        letterSpacing: 0.5)),
-                const SizedBox(height: 12),
-                _buildDetailRow('Category',
-                    category?['name']?.toString() ?? 'N/A', Icons.category),
-                const SizedBox(height: 8),
-                _buildDetailRow('Location',
-                    issue['location']?.toString() ?? 'N/A', Icons.location_on),
-                const SizedBox(height: 8),
-                _buildDetailRow('Priority', priorityName, Icons.priority_high),
-                const SizedBox(height: 8),
-                _buildDetailRow(
-                    'Resolution Time',
-                    '${issue['issue_priorities']?['days_to_resolve'] ?? 0} days',
-                    Icons.timer),
-                const SizedBox(height: 8),
-                _buildDetailRow(
-                    'Reported On',
-                    _formatDate(issue['created_at']?.toString()),
-                    Icons.calendar_today),
-                const Divider(height: 24),
-                const Text('STUDENT INFORMATION',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey,
-                        letterSpacing: 0.5)),
-                const SizedBox(height: 12),
-                _buildDetailRow('Name', studentName, Icons.person),
-                const SizedBox(height: 8),
-                _buildDetailRow(
-                    'Email',
-                    studentInfo?['email']?.toString() ??
-                        issue['student_email']?.toString() ??
-                        'N/A',
-                    Icons.email),
-                if (studentInfo?['phone'] != null)
-                  _buildDetailRow('Phone',
-                      studentInfo?['phone']?.toString() ?? 'N/A', Icons.phone),
-                if (issue['student_id'] != null)
-                  _buildDetailRow('Student ID', issue['student_id'].toString(),
-                      Icons.badge),
-                const Divider(height: 24),
-                const Text('DESCRIPTION',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.grey,
-                        letterSpacing: 0.5)),
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                      color: Colors.grey[50],
-                      borderRadius: BorderRadius.circular(8)),
-                  child: Text(
-                      issue['description']?.toString() ??
-                          'No description provided',
-                      style: const TextStyle(fontSize: 13, height: 1.4)),
-                ),
-
-                // Attachment Section - Only show if attachment exists
-                if (hasAttachment && attachmentUrl.isNotEmpty) ...[
+                  _buildDetailRow(
+                      'Location',
+                      issue['location']?.toString() ?? 'N/A',
+                      Icons.location_on),
+                  const SizedBox(height: 8),
+                  _buildDetailRow(
+                      'Priority', priorityName, Icons.priority_high),
+                  const SizedBox(height: 8),
+                  _buildDetailRow('Resolution Time',
+                      '${priority?['days_to_resolve'] ?? 0} days', Icons.timer),
+                  const SizedBox(height: 8),
+                  _buildDetailRow(
+                      'Reported On',
+                      _formatDate(issue['created_at']?.toString()),
+                      Icons.calendar_today),
                   const Divider(height: 24),
-                  const Text('ATTACHMENT',
+                  const Text('STUDENT INFORMATION',
+                      style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.grey,
+                          letterSpacing: 0.5)),
+                  const SizedBox(height: 12),
+                  _buildDetailRow('Name', studentName, Icons.person),
+                  const SizedBox(height: 8),
+                  _buildDetailRow(
+                      'Email',
+                      studentInfo?['email']?.toString() ??
+                          issue['student_email']?.toString() ??
+                          'N/A',
+                      Icons.email),
+                  if (studentInfo?['phone'] != null)
+                    _buildDetailRow(
+                        'Phone',
+                        studentInfo?['phone']?.toString() ?? 'N/A',
+                        Icons.phone),
+                  if (issue['student_id'] != null)
+                    _buildDetailRow('Student ID',
+                        issue['student_id'].toString(), Icons.badge),
+                  const Divider(height: 24),
+                  const Text('DESCRIPTION',
                       style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.bold,
@@ -1386,176 +1397,243 @@ class _AdminIssuesPageState extends State<AdminIssuesPage> {
                           letterSpacing: 0.5)),
                   const SizedBox(height: 8),
                   Container(
-                    padding: const EdgeInsets.all(12),
+                    padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: Colors.grey[50],
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.grey[200]!),
-                    ),
-                    child: Column(
-                      children: [
-                        Row(
-                          children: [
-                            Icon(_getFileIcon(attachmentType),
-                                color: Colors.green[600], size: 32),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(attachmentName,
-                                      style: const TextStyle(
-                                          fontWeight: FontWeight.w500,
-                                          fontSize: 14)),
-                                  if (attachmentSize != null &&
-                                      attachmentSize > 0)
-                                    Text(_formatFileSize(attachmentSize),
-                                        style: TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.grey[600])),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: OutlinedButton.icon(
-                                onPressed: () => _previewAttachment(
-                                    attachmentUrl, attachmentName),
-                                icon: const Icon(Icons.visibility),
-                                label: const Text('Preview'),
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () => _downloadFile(
-                                    attachmentUrl, attachmentName),
-                                icon: const Icon(Icons.download),
-                                label: const Text('Download'),
-                                style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                        color: Colors.grey[50],
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Text(
+                        issue['description']?.toString() ??
+                            'No description provided',
+                        style: const TextStyle(fontSize: 13, height: 1.4)),
                   ),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (status == 'rejected')
-            Container(
-              padding: const EdgeInsets.all(12),
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.red[50],
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.red[200]!),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(children: [
-                    Icon(Icons.cancel, color: Colors.red[700], size: 18),
-                    const SizedBox(width: 8),
-                    Text('Rejection Reason',
+                  if (hasAttachment && attachmentUrl.isNotEmpty) ...[
+                    const Divider(height: 24),
+                    const Text('ATTACHMENT',
                         style: TextStyle(
-                            fontSize: 12,
+                            fontSize: 11,
                             fontWeight: FontWeight.bold,
-                            color: Colors.red[700])),
-                  ]),
-                  const SizedBox(height: 6),
-                  Text(issue['rejection_reason'] ?? 'No reason provided',
-                      style: TextStyle(fontSize: 12, color: Colors.red[600])),
+                            color: Colors.grey,
+                            letterSpacing: 0.5)),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[50],
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.grey[200]!),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            children: [
+                              Icon(_getFileIcon(attachmentType),
+                                  color: Colors.green[600], size: 32),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(attachmentName,
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.w500,
+                                            fontSize: 14)),
+                                    if (attachmentSize != null &&
+                                        attachmentSize > 0)
+                                      Text(_formatFileSize(attachmentSize),
+                                          style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.grey[600])),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () => _previewAttachment(
+                                      attachmentUrl, attachmentName),
+                                  icon: const Icon(Icons.visibility),
+                                  label: const Text('Preview'),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () => _downloadFile(
+                                      attachmentUrl, attachmentName),
+                                  icon: const Icon(Icons.download),
+                                  label: const Text('Download'),
+                                  style: ElevatedButton.styleFrom(
+                                      backgroundColor: Colors.green),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _addComment(issue['id'].toString()),
-                  icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                  label: const Text('Add Comment'),
-                  style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.green,
-                      side: const BorderSide(color: Colors.green)),
+            const SizedBox(height: 12),
+            if (status.toUpperCase() == 'REJECTED')
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.red[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red[200]!),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      Icon(Icons.cancel, color: Colors.red[700], size: 18),
+                      const SizedBox(width: 8),
+                      Text('Rejection Reason',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.red[700])),
+                    ]),
+                    const SizedBox(height: 6),
+                    Text(issue['rejection_reason'] ?? 'No reason provided',
+                        style: TextStyle(fontSize: 12, color: Colors.red[600])),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _viewComments(
-                      issue['id'].toString(), issue['title'] ?? 'Issue'),
-                  icon: const Icon(Icons.comment, size: 18),
-                  label: const Text('View Comments'),
-                  style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.green,
-                      side: const BorderSide(color: Colors.green)),
-                ),
-              ),
-            ],
-          ),
-          if (canAct) ...[
-            const SizedBox(height: 10),
             Row(
               children: [
-                if (status == 'pending')
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () => _updateIssueStatus(
-                          issue['id'].toString(), 'in_progress'),
-                      icon: const Icon(Icons.play_arrow, size: 18),
-                      label: const Text('Start Working'),
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue),
-                    ),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _addComment(issue['id'].toString()),
+                    icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                    label: const Text('Add Comment'),
+                    style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.green,
+                        side: const BorderSide(color: Colors.green)),
                   ),
-                if (status == 'in_progress') ...[
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () => _resolveIssue(issue['id'].toString()),
-                      icon: const Icon(Icons.check_circle, size: 18),
-                      label: const Text('Resolve Issue'),
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.green),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      onPressed: () => _escalateIssue(issue),
-                      icon: const Icon(Icons.arrow_upward, size: 18),
-                      label: const Text('Escalate'),
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.purple),
-                    ),
-                  ),
-                ],
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: OutlinedButton.icon(
-                    onPressed: () => _showRejectDialog(issue['id'].toString()),
-                    icon: const Icon(Icons.close, size: 18),
-                    label: const Text('Reject'),
+                    onPressed: () => _viewComments(
+                        issue['id'].toString(), issue['title'] ?? 'Issue'),
+                    icon: const Icon(Icons.comment, size: 18),
+                    label: const Text('View Comments'),
                     style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.red,
-                        side: const BorderSide(color: Colors.red)),
+                        foregroundColor: Colors.green,
+                        side: const BorderSide(color: Colors.green)),
                   ),
                 ),
               ],
             ),
+            if (canAct) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  if (status.toUpperCase() == 'PENDING' ||
+                      status.toUpperCase() == 'OPEN')
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () => _updateIssueStatus(
+                            issue['id'].toString(), 'in_progress'),
+                        icon: const Icon(Icons.play_arrow, size: 18),
+                        label: const Text('Start Working'),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue),
+                      ),
+                    ),
+                  if (status.toUpperCase() == 'IN_PROGRESS' ||
+                      status.toUpperCase() == 'UNDER_REVIEW') ...[
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () => _resolveIssue(issue['id'].toString()),
+                        icon: const Icon(Icons.check_circle, size: 18),
+                        label: const Text('Resolve Issue'),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        onPressed: () => _escalateIssue(issue),
+                        icon: const Icon(Icons.arrow_upward, size: 18),
+                        label: const Text('Escalate'),
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.purple),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () =>
+                          _showRejectDialog(issue['id'].toString()),
+                      icon: const Icon(Icons.close, size: 18),
+                      label: const Text('Reject'),
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red,
+                          side: const BorderSide(color: Colors.red)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
-        ],
-      ),
-    );
+        ),
+      );
+    } catch (e, stackTrace) {
+      print('═══════════════════════════════════════════════════════════');
+      print('ERROR IN _buildExpandedContent');
+      print('Error: $e');
+      print('Stack Trace:');
+      print(stackTrace);
+      print('═══════════════════════════════════════════════════════════');
+
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.red[50],
+          borderRadius: const BorderRadius.only(
+              bottomLeft: Radius.circular(16),
+              bottomRight: Radius.circular(16)),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Icon(Icons.error_outline, color: Colors.red[700]),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Error loading expanded content',
+                    style: TextStyle(
+                      color: Colors.red[700],
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Error: $e',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.red[600],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
   void _toggleExpand(Map<String, dynamic> issue) {

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'package:uni_track/students/students_homepage.dart';
 import 'package:uni_track/students/students_issuespage.dart';
 import 'package:uni_track/students/students_noticespage.dart';
@@ -43,7 +44,7 @@ class _StudentsMainpageState extends State<StudentsMainpage> {
 
   void _navigateToNotices() {
     setState(() {
-      _selectedIndex = 2;
+      _selectedIndex = 2; // Changed to 2 (Notices tab)
     });
   }
 

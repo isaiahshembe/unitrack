@@ -23,7 +23,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
   final _editPriorityNameController = TextEditingController();
   final _editDaysController = TextEditingController();
 
-  // Predefined colors for priorities
   final Map<String, Color> _priorityColors = {
     'Low': Colors.green,
     'Medium': Colors.orange,
@@ -320,7 +319,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
       ),
       body: Column(
         children: [
-          // Add Priority Form
           Container(
             padding: const EdgeInsets.all(15),
             decoration: BoxDecoration(
@@ -331,7 +329,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
               key: _formKey,
               child: Column(
                 children: [
-                  // Priority Name Field
                   TextFormField(
                     controller: _priorityNameController,
                     decoration: InputDecoration(
@@ -361,8 +358,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
                     },
                   ),
                   const SizedBox(height: 15),
-                  
-                  // Days to Resolve Field
                   TextFormField(
                     controller: _daysController,
                     decoration: InputDecoration(
@@ -398,8 +393,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
                     },
                   ),
                   const SizedBox(height: 15),
-                  
-                  // Add Button
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
@@ -436,8 +429,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
               ),
             ),
           ),
-
-          // Info Box
           Container(
             margin: const EdgeInsets.all(15),
             padding: const EdgeInsets.all(12),
@@ -462,8 +453,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
               ],
             ),
           ),
-
-          // Error Message
           if (_errorMessage != null)
             Container(
               padding: const EdgeInsets.all(12),
@@ -485,8 +474,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
                 ],
               ),
             ),
-
-          // Priorities List
           Expanded(
             child: _isLoading
                 ? const Center(
@@ -579,7 +566,6 @@ class _AddIssuePrioritiesState extends State<AddIssuePriorities> {
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    // Days Badge
                                     Container(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 10,

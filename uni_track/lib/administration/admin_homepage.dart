@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uni_track/analytics/analytics.dart';
+import 'package:uni_track/services/mobile_data_service.dart';
 
 class AdminHomepage extends StatefulWidget {
   final Map<String, dynamic> adminData;
@@ -20,18 +21,40 @@ class AdminHomepage extends StatefulWidget {
 
 class _AdminHomepageState extends State<AdminHomepage> {
   final _supabase = Supabase.instance.client;
+  final _data = MobileDataService();
   int _totalAssigned = 0;
   int _pendingIssues = 0;
   int _resolvedToday = 0;
   int _escalatedCount = 0;
+  int _inProgressCount = 0;
+  int _rejectedCount = 0;
   String _officeName = '';
   String _officeLevel = '';
   bool _isLoading = true;
+  Map<String, dynamic>? _adminOffice;
 
   @override
   void initState() {
     super.initState();
     _fetchDashboardData();
+  }
+
+  Future<void> _fetchAdminOffice() async {
+    try {
+      final assignment = await _supabase
+          .from('office_assignments')
+          .select('*, offices(*)')
+          .eq('admin_id', widget.adminData['id'])
+          .maybeSingle();
+
+      if (assignment != null) {
+        _adminOffice = Map<String, dynamic>.from(assignment['offices'] ?? {});
+        _officeName = _adminOffice?['name'] ?? '';
+        _officeLevel = _adminOffice?['level'] ?? '';
+      }
+    } catch (e) {
+      print('Error fetching admin office: $e');
+    }
   }
 
   Future<void> _fetchDashboardData() async {
@@ -42,40 +65,108 @@ class _AdminHomepageState extends State<AdminHomepage> {
     });
 
     try {
-      final adminId = widget.adminData['id'];
+      // First get the admin's assigned office
+      await _fetchAdminOffice();
 
-      final issues = await _supabase
+      if (_adminOffice == null) {
+        setState(() {
+          _isLoading = false;
+          _totalAssigned = 0;
+          _pendingIssues = 0;
+          _resolvedToday = 0;
+          _escalatedCount = 0;
+          _inProgressCount = 0;
+          _rejectedCount = 0;
+        });
+        return;
+      }
+
+      final officeId = _adminOffice!['id'];
+
+      // Fetch issues directly from Supabase with proper relationships
+      final response = await _supabase
           .from('issues')
-          .select('status, escalated, created_at, updated_at')
-          .eq('assigned_admin_id', adminId);
+          .select('''
+            *,
+            issue_categories (
+              id,
+              name,
+              description
+            ),
+            issue_priorities (
+              id,
+              name,
+              days_to_resolve
+            ),
+            assigned_office:offices!issues_assigned_office_id_fkey (
+              id,
+              name,
+              level,
+              building,
+              room_number
+            )
+          ''')
+          .eq('assigned_office_id', officeId)
+          .order('created_at', ascending: false);
 
-      _totalAssigned = issues.length;
-      _pendingIssues = issues.where((i) => i['status'] == 'pending').length;
-      _escalatedCount = issues.where((i) => i['escalated'] == true).length;
+      final issues = List<Map<String, dynamic>>.from(response);
+
+      // Process issues
+      final processedIssues = issues.map((issue) {
+        final processed = Map<String, dynamic>.from(issue);
+        
+        if (processed['assigned_office'] != null) {
+          processed['offices'] = processed['assigned_office'];
+        }
+
+        if (processed['escalation_level'] != null &&
+            processed['escalation_level'] > 0) {
+          processed['escalated'] = true;
+        } else {
+          processed['escalated'] = false;
+        }
+
+        return processed;
+      }).toList();
+
+      // Calculate stats
+      _totalAssigned = processedIssues.length;
+      
+      _pendingIssues = processedIssues
+          .where((i) => 
+              i['status']?.toString().toUpperCase() == 'PENDING' ||
+              i['status']?.toString().toUpperCase() == 'OPEN')
+          .length;
+          
+      _inProgressCount = processedIssues
+          .where((i) => 
+              i['status']?.toString().toUpperCase() == 'IN_PROGRESS' ||
+              i['status']?.toString().toUpperCase() == 'UNDER_REVIEW')
+          .length;
+          
+      _escalatedCount = processedIssues
+          .where((i) => i['escalated'] == true)
+          .length;
+          
+      _rejectedCount = processedIssues
+          .where((i) => i['status']?.toString().toUpperCase() == 'REJECTED')
+          .length;
 
       final today = DateTime.now();
-      _resolvedToday = issues.where((i) {
-        if (i['status'] == 'resolved' && i['updated_at'] != null) {
-          final updated = DateTime.parse(i['updated_at'].toString());
-          return updated.year == today.year &&
-              updated.month == today.month &&
-              updated.day == today.day;
+      _resolvedToday = processedIssues.where((i) {
+        if (i['status']?.toString().toUpperCase() == 'RESOLVED' &&
+            i['updated_at'] != null) {
+          try {
+            final updated = DateTime.parse(i['updated_at'].toString());
+            return updated.year == today.year &&
+                updated.month == today.month &&
+                updated.day == today.day;
+          } catch (e) {
+            return false;
+          }
         }
         return false;
       }).length;
-
-      if (widget.adminData['assigned_office_id'] != null) {
-        final office = await _supabase
-            .from('offices')
-            .select('name, level')
-            .eq('id', widget.adminData['assigned_office_id'])
-            .maybeSingle();
-
-        if (office != null) {
-          _officeName = office['name'] ?? '';
-          _officeLevel = office['level'] ?? '';
-        }
-      }
 
       if (mounted) {
         setState(() {
@@ -83,6 +174,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
         });
       }
     } catch (e) {
+      print('Error fetching dashboard data: $e');
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -91,7 +183,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
           SnackBar(
             content: Text('Error loading dashboard: $e'),
             backgroundColor: Colors.red,
-            duration: const Duration(seconds: 2),
+            duration: const Duration(seconds: 3),
           ),
         );
       }
@@ -215,7 +307,9 @@ class _AdminHomepageState extends State<AdminHomepage> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '$_officeName • $_officeLevel',
+                      _officeName.isNotEmpty 
+                          ? '$_officeName • $_officeLevel' 
+                          : 'No office assigned yet',
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 13,
@@ -379,7 +473,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 ),
               ),
             );
-            // Refresh data if coming back from analytics
             if (result == true) {
               _fetchDashboardData();
             }
@@ -463,10 +556,10 @@ class _AdminHomepageState extends State<AdminHomepage> {
       child: Column(
         children: [
           _buildMetricRow(
-            'Issues Resolved Today',
-            '$_resolvedToday',
-            Icons.today,
-            Colors.green,
+            'Total Assigned',
+            '$_totalAssigned',
+            Icons.inbox,
+            Colors.blue,
           ),
           const Divider(),
           _buildMetricRow(
@@ -477,17 +570,31 @@ class _AdminHomepageState extends State<AdminHomepage> {
           ),
           const Divider(),
           _buildMetricRow(
-            'Escalated Issues',
+            'In Progress',
+            '$_inProgressCount',
+            Icons.play_circle,
+            Colors.blue,
+          ),
+          const Divider(),
+          _buildMetricRow(
+            'Escalated',
             '$_escalatedCount',
             Icons.arrow_upward,
             Colors.purple,
           ),
           const Divider(),
           _buildMetricRow(
-            'Total Assigned',
-            '$_totalAssigned',
-            Icons.inbox,
-            Colors.blue,
+            'Resolved Today',
+            '$_resolvedToday',
+            Icons.check_circle,
+            Colors.green,
+          ),
+          const Divider(),
+          _buildMetricRow(
+            'Rejected',
+            '$_rejectedCount',
+            Icons.cancel,
+            Colors.red,
           ),
         ],
       ),

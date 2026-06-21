@@ -96,41 +96,7 @@ class _HomePageState extends State<HomePage> {
         ),
         backgroundColor: Colors.white,
         elevation: 1,
-        actions: [
-          IconButton(
-            icon: Stack(
-              children: [
-                const Icon(Icons.notifications_outlined, color: Colors.green),
-                if (_unreadNotices > 0)
-                  Positioned(
-                    right: 0,
-                    top: 0,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: const BoxDecoration(
-                        color: Colors.red,
-                        shape: BoxShape.circle,
-                      ),
-                      constraints: const BoxConstraints(
-                        minWidth: 16,
-                        minHeight: 16,
-                      ),
-                      child: Text(
-                        _unreadNotices > 9 ? '9+' : '$_unreadNotices',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 8,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            onPressed: () => widget.onNavigateToNotices(),
-          ),
-        ],
+        // REMOVED: Bell Icon from actions
       ),
       body: RefreshIndicator(
         onRefresh: _fetchDashboardData,
@@ -210,7 +176,6 @@ class _HomePageState extends State<HomePage> {
                             ],
                           ),
                           const SizedBox(height: 16),
-                          // FIXED: Wrap the Row in a SingleChildScrollView to prevent overflow
                           SingleChildScrollView(
                             scrollDirection: Axis.horizontal,
                             child: Row(
@@ -348,62 +313,69 @@ class _HomePageState extends State<HomePage> {
                     ),
                     const SizedBox(height: 24),
 
-                    // Notices Banner
+                    // Notices Banner - Click to navigate and disappears
                     if (_unreadNotices > 0)
-                      Container(
-                        margin: const EdgeInsets.only(bottom: 16),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.blue[50],
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.blue[200]!),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: Colors.blue[100],
-                                borderRadius: BorderRadius.circular(12),
+                      GestureDetector(
+                        onTap: () {
+                          // Navigate to notices and mark as read
+                          widget.onNavigateToNotices();
+                          // Set unread to 0 so banner disappears
+                          setState(() {
+                            _unreadNotices = 0;
+                          });
+                        },
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 16),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue[50],
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.blue[200]!),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue[100],
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(
+                                  Icons.notifications_active,
+                                  color: Colors.blue[700],
+                                  size: 24,
+                                ),
                               ),
-                              child: Icon(
-                                Icons.notifications_active,
-                                color: Colors.blue[700],
-                                size: 24,
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    '$_unreadNotices New Notices',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.blue[700],
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '$_unreadNotices New Notice${_unreadNotices > 1 ? 's' : ''}',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue[700],
+                                      ),
                                     ),
-                                  ),
-                                  Text(
-                                    'Tap to view announcements',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.blue[600],
+                                    Text(
+                                      'Tap to view announcements',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.blue[600],
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                            IconButton(
-                              icon: Icon(
+                              Icon(
                                 Icons.arrow_forward_ios,
                                 color: Colors.blue[700],
                                 size: 16,
                               ),
-                              onPressed: () => widget.onNavigateToNotices(),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
 

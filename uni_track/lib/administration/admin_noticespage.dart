@@ -345,11 +345,34 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
         }
       }
 
+      // FIX: Ensure admin exists in admins table first
+      final adminId = widget.adminData['id'].toString();
+
+      // Check if admin exists in admins table
+      final adminCheck = await _supabase
+          .from('admins')
+          .select('id')
+          .eq('id', adminId)
+          .maybeSingle();
+
+      if (adminCheck == null) {
+        // Admin doesn't exist in admins table, create it
+        await _supabase.from('admins').insert({
+          'id': adminId,
+          'full_name': widget.adminData['full_name'],
+          'email': widget.adminData['email'],
+          'employee_id': widget.adminData['employee_id'] ?? 'N/A',
+          'phone': widget.adminData['phone'] ?? 'N/A',
+          'role': 'makerere_admin',
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+
       final noticeData = {
         'title': _titleController.text.trim(),
         'message': _messageController.text.trim(),
         'target_type': _selectedTargetType,
-        'admin_id': widget.adminData['id'],
+        'admin_id': adminId,
         'admin_name': widget.adminData['full_name'],
         'created_at': DateTime.now().toIso8601String(),
         'attachment_url': attachmentUrl,
@@ -381,6 +404,7 @@ class _AdminNoticesPageState extends State<AdminNoticesPage> {
         _showSnackBar('Notice sent successfully!', Colors.green);
       }
     } catch (e) {
+      print('Error sending notice: $e');
       if (mounted) {
         setState(() => _isSaving = false);
         _showSnackBar('Error: $e', Colors.red);

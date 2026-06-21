@@ -27,7 +27,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   List<Map<String, dynamic>> _categories = [];
   String? _selectedCategoryId;
 
-  // File attachment variables
   String? _selectedFileName;
   Uint8List? _selectedFileData;
   String? _selectedFileType;
@@ -94,7 +93,16 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
 
       final response = await _supabase
           .from('issues')
-          .select('*')
+          .select('''
+            *,
+            issue_categories (
+              name
+            ),
+            issue_priorities (
+              name,
+              days_to_resolve
+            )
+          ''')
           .eq('student_id', studentId)
           .order('created_at', ascending: false)
           .limit(5);
@@ -112,7 +120,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
-  // Web file picker
   void _pickFileWeb() {
     final html.FileUploadInputElement uploadInput =
         html.FileUploadInputElement();
@@ -146,7 +153,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     uploadInput.click();
   }
 
-  // Mobile file picker
   Future<void> _pickFileMobile() async {
     try {
       if (Platform.isAndroid) {
@@ -217,7 +223,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     }
   }
 
-  // Unified file picker
   Future<void> _pickFile() async {
     try {
       if (html.window != null) {
@@ -229,7 +234,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     await _pickFileMobile();
   }
 
-  // Upload file to Supabase Storage
   Future<Map<String, dynamic>?> _uploadFile() async {
     if (_selectedFileData == null) return null;
 
@@ -340,6 +344,63 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
     return Icons.insert_drive_file;
   }
 
+  // NEW: Get the appropriate office for a category
+  Future<int?> _getOfficeForCategory(int categoryId) async {
+    try {
+      // Get the category with its priority
+      final category = _categories.firstWhere(
+        (c) => c['id'] == categoryId,
+        orElse: () => {},
+      );
+      
+      if (category.isEmpty) return null;
+      
+      final priority = category['issue_priorities'];
+      if (priority == null) return null;
+      
+      // Determine office level based on priority
+      final priorityName = priority['name']?.toString().toLowerCase() ?? '';
+      String officeLevel;
+      switch (priorityName) {
+        case 'low':
+          officeLevel = 'Department Level';
+          break;
+        case 'medium':
+          officeLevel = 'College Level';
+          break;
+        case 'high':
+        case 'critical':
+          officeLevel = 'Top Level';
+          break;
+        default:
+          officeLevel = 'Department Level';
+      }
+      
+      // Get the office for this level
+      final office = await _supabase
+          .from('offices')
+          .select('id')
+          .eq('level', officeLevel)
+          .maybeSingle();
+      
+      if (office != null) {
+        return office['id'] as int?;
+      }
+      
+      // Fallback: get any available office
+      final defaultOffice = await _supabase
+          .from('offices')
+          .select('id')
+          .limit(1)
+          .maybeSingle();
+      
+      return defaultOffice?['id'] as int?;
+    } catch (e) {
+      print('Error getting office: $e');
+      return null;
+    }
+  }
+
   Future<void> _submitIssue() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedCategoryId == null) {
@@ -369,6 +430,9 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         (c) => c['id'].toString() == _selectedCategoryId,
       );
       final priority = selectedCategory['issue_priorities'];
+      
+      // Get the office for this category
+      final officeId = await _getOfficeForCategory(selectedCategory['id']);
 
       final issueData = {
         'title': _titleController.text.trim(),
@@ -383,6 +447,7 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
         'college_id': widget.userData?['college_id'],
         'course_id': widget.userData?['course_id'],
         'status': 'pending',
+        'assigned_office_id': officeId, // CRITICAL: Assign to office
         'created_at': DateTime.now().toIso8601String(),
         'attachment_url': attachmentUrl,
         'attachment_name': attachmentName,
@@ -458,7 +523,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 16),
 
-              // Title
               TextFormField(
                 controller: _titleController,
                 decoration: InputDecoration(
@@ -483,7 +547,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 16),
 
-              // Category
               const Text(
                 'Category',
                 style: TextStyle(
@@ -604,7 +667,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
                 ),
               const SizedBox(height: 16),
 
-              // Location
               TextFormField(
                 controller: _locationController,
                 decoration: InputDecoration(
@@ -629,7 +691,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 16),
 
-              // Description
               TextFormField(
                 controller: _descriptionController,
                 maxLines: 5,
@@ -659,7 +720,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 16),
 
-              // File Attachment Section
               const Divider(),
               const SizedBox(height: 12),
               Row(
@@ -725,7 +785,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
 
               const SizedBox(height: 24),
 
-              // Submit Button
               SizedBox(
                 width: double.infinity,
                 height: 50,
@@ -755,7 +814,6 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
               ),
               const SizedBox(height: 30),
 
-              // Saved Issues Section
               if (_isLoadingIssues)
                 const Center(
                   child: Padding(
@@ -798,8 +856,8 @@ class _ReportIssuePageState extends State<ReportIssuePage> {
   }
 
   Widget _buildSavedIssueCard(Map<String, dynamic> issue) {
-    final priorityId = issue['priority_id'];
-    final priorityName = _getPriorityName(priorityId);
+    final priorityData = issue['issue_priorities'] as Map<String, dynamic>?;
+    final priorityName = priorityData?['name'] ?? 'N/A';
     final priorityColor = _getPriorityColor(priorityName);
     final status = issue['status']?.toString() ?? 'pending';
     final statusColor = status == 'resolved'

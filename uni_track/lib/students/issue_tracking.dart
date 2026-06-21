@@ -20,9 +20,14 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
   final _commentController = TextEditingController();
   bool _isSubmittingComment = false;
 
+  // Store complete issue data with relationships
+  Map<String, dynamic>? _completeIssueData;
+  bool _isLoadingIssue = true;
+
   @override
   void initState() {
     super.initState();
+    _fetchCompleteIssueData();
     _fetchComments();
   }
 
@@ -32,9 +37,79 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     super.dispose();
   }
 
+  // FIX: Fetch complete issue data with all relationships
+  Future<void> _fetchCompleteIssueData() async {
+    setState(() => _isLoadingIssue = true);
+
+    try {
+      final response = await _supabase
+          .from('issues')
+          .select('''
+            *,
+            issue_categories (
+              id,
+              name,
+              description,
+              priority_id
+            ),
+            issue_priorities (
+              id,
+              name,
+              days_to_resolve
+            ),
+            assigned_office:offices!issues_assigned_office_id_fkey (
+              id,
+              name,
+              level,
+              building,
+              room_number
+            ),
+            original_office:offices!issues_original_office_id_fkey (
+              id,
+              name,
+              level
+            ),
+            admins (
+              id,
+              full_name,
+              email
+            )
+          ''')
+          .eq('id', widget.issue['id'])
+          .maybeSingle()
+          .timeout(const Duration(seconds: 10));
+
+      if (mounted) {
+        setState(() {
+          if (response != null) {
+            _completeIssueData = Map<String, dynamic>.from(response);
+
+            // Rename assigned_office to offices for compatibility
+            if (_completeIssueData!['assigned_office'] != null) {
+              _completeIssueData!['offices'] =
+                  _completeIssueData!['assigned_office'];
+            }
+          } else {
+            _completeIssueData = widget.issue;
+          }
+          _isLoadingIssue = false;
+        });
+      }
+    } catch (e) {
+      print('Error fetching issue details: $e');
+      if (mounted) {
+        setState(() {
+          _completeIssueData = widget.issue;
+          _isLoadingIssue = false;
+        });
+      }
+    }
+  }
+
   Future<void> _fetchComments() async {
     setState(() => _isLoadingComments = true);
     try {
+      // FIX: Fetch all comments regardless of student_id or admin_id
       final response = await _supabase
           .from('issue_comments')
           .select('*')
@@ -92,7 +167,6 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     );
   }
 
-  // Preview attachment
   Future<void> _previewAttachment(String url, String fileName) async {
     try {
       final uri = Uri.parse(url);
@@ -100,7 +174,7 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
           fileName.toLowerCase().contains('.jpeg') ||
           fileName.toLowerCase().contains('.png') ||
           fileName.toLowerCase().contains('.gif');
-      
+
       if (isImage) {
         showDialog(
           context: context,
@@ -126,9 +200,11 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                         return const Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.broken_image, color: Colors.white, size: 50),
+                            Icon(Icons.broken_image,
+                                color: Colors.white, size: 50),
                             SizedBox(height: 10),
-                            Text('Failed to load image', style: TextStyle(color: Colors.white)),
+                            Text('Failed to load image',
+                                style: TextStyle(color: Colors.white)),
                           ],
                         );
                       },
@@ -139,7 +215,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                   top: 10,
                   right: 10,
                   child: IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                    icon:
+                        const Icon(Icons.close, color: Colors.white, size: 30),
                     onPressed: () => Navigator.pop(context),
                   ),
                 ),
@@ -159,7 +236,6 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     }
   }
 
-  // Download file
   void _downloadFile(String url, String fileName) {
     try {
       final anchor = html.AnchorElement(href: url);
@@ -179,7 +255,10 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     if (fileType == null) return Icons.attach_file;
     final ext = fileType.toLowerCase();
     if (ext.contains('pdf')) return Icons.picture_as_pdf;
-    if (ext.contains('jpg') || ext.contains('jpeg') || ext.contains('png') || ext.contains('gif')) {
+    if (ext.contains('jpg') ||
+        ext.contains('jpeg') ||
+        ext.contains('png') ||
+        ext.contains('gif')) {
       return Icons.image;
     }
     if (ext.contains('doc')) return Icons.description;
@@ -193,22 +272,63 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
 
   @override
   Widget build(BuildContext context) {
-    final category = widget.issue['issue_categories'] as Map<String, dynamic>?;
-    final priority = widget.issue['issue_priorities'] as Map<String, dynamic>?;
-    final office = widget.issue['offices'] as Map<String, dynamic>?;
-    final admin = widget.issue['admins'] as Map<String, dynamic>?;
-    final status = widget.issue['status']?.toString() ?? 'pending';
-    final escalationLevel = widget.issue['escalation_level'] ?? 0;
-    final maxEscalationLevel = widget.issue['max_escalation_level'] ?? 3;
-    final isEscalated = widget.issue['escalated'] == true;
+    // Use complete issue data if available
+    final issueData = _completeIssueData ?? widget.issue;
+
+    // FIX: Extract relationship data properly
+    final category = issueData['issue_categories'] is Map
+        ? issueData['issue_categories'] as Map<String, dynamic>
+        : null;
+
+    final priority = issueData['issue_priorities'] is Map
+        ? issueData['issue_priorities'] as Map<String, dynamic>
+        : null;
+
+    final office = issueData['offices'] is Map
+        ? issueData['offices'] as Map<String, dynamic>
+        : null;
+
+    final admin = issueData['admins'] is Map
+        ? issueData['admins'] as Map<String, dynamic>
+        : null;
+
+    final status = issueData['status']?.toString() ?? 'pending';
+    final escalationLevel = issueData['escalation_level'] ?? 0;
+    final maxEscalationLevel = issueData['max_escalation_level'] ?? 3;
+    final isEscalated = issueData['escalated'] == true;
     final isRejected = status == 'rejected';
-    final rejectionReason = widget.issue['rejection_reason']?.toString();
+    final rejectionReason = issueData['rejection_reason']?.toString();
+    // FIX: Get days_to_resolve from priority relationship
     final daysToResolve = priority?['days_to_resolve'] ?? 0;
-    final hasAttachment = widget.issue['attachment_url'] != null &&
-        widget.issue['attachment_url'].toString().isNotEmpty;
-    final attachmentUrl = widget.issue['attachment_url'] ?? '';
-    final attachmentName = widget.issue['attachment_name'] ?? 'Attachment';
-    final attachmentType = widget.issue['attachment_type'];
+    final hasAttachment = issueData['attachment_url'] != null &&
+        issueData['attachment_url'].toString().isNotEmpty;
+    final attachmentUrl = issueData['attachment_url'] ?? '';
+    final attachmentName = issueData['attachment_name'] ?? 'Attachment';
+    final attachmentType = issueData['attachment_type'];
+
+    // Show loading indicator while fetching complete data
+    if (_isLoadingIssue) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          title: const Text(
+            'Issue Tracking',
+            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black),
+          ),
+          backgroundColor: Colors.white,
+          elevation: 1,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.black),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ),
+        body: const Center(
+          child: CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.green),
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -230,7 +350,7 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              widget.issue['title']?.toString() ?? 'Untitled',
+              issueData['title']?.toString() ?? 'Untitled',
               style: const TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.bold,
@@ -238,7 +358,6 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
               ),
             ),
             const SizedBox(height: 20),
-
             if (isEscalated && escalationLevel > 0) ...[
               Container(
                 width: double.infinity,
@@ -283,7 +402,6 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
               ),
               const SizedBox(height: 16),
             ],
-
             if (isRejected) ...[
               Container(
                 width: double.infinity,
@@ -328,11 +446,9 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
               ),
               const SizedBox(height: 16),
             ],
-
             _buildTrackingTimeline(status, escalationLevel, isEscalated,
                 isRejected, maxEscalationLevel),
             const SizedBox(height: 24),
-
             _buildSectionCard(
               'Issue Details',
               Icons.info_outline,
@@ -344,29 +460,27 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                     'Priority', priority?['name']?.toString() ?? 'N/A'),
                 _buildDetailRow('Resolution Time', '$daysToResolve day(s)'),
                 _buildDetailRow(
-                    'Location', widget.issue['location']?.toString() ?? 'N/A'),
+                    'Location', issueData['location']?.toString() ?? 'N/A'),
                 _buildDetailRow('Reported',
-                    _formatDate(widget.issue['created_at']?.toString())),
+                    _formatDate(issueData['created_at']?.toString())),
                 _buildDetailRow('Status',
                     _getStatusLabel(status, isEscalated, escalationLevel)),
                 if (isEscalated && escalationLevel > 0) ...[
                   _buildDetailRow('Escalation Level',
                       'Level $escalationLevel of $maxEscalationLevel'),
                   _buildDetailRow('Escalated On',
-                      _formatDate(widget.issue['escalated_at']?.toString())),
+                      _formatDate(issueData['escalated_at']?.toString())),
                 ],
                 if (isRejected) ...[
                   _buildDetailRow('Rejected On',
-                      _formatDate(widget.issue['rejected_at']?.toString())),
-                  if (widget.issue['rejected_by_name'] != null)
+                      _formatDate(issueData['rejected_at']?.toString())),
+                  if (issueData['rejected_by_name'] != null)
                     _buildDetailRow('Rejected By',
-                        widget.issue['rejected_by_name'].toString()),
+                        issueData['rejected_by_name'].toString()),
                 ],
               ],
             ),
             const SizedBox(height: 16),
-
-            // Attachment Section
             if (hasAttachment) ...[
               _buildSectionCard(
                 'Attachment',
@@ -405,7 +519,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    _formatFileSize(widget.issue['attachment_size']),
+                                    _formatFileSize(
+                                        issueData['attachment_size']),
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.grey[600],
@@ -421,7 +536,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                           children: [
                             Expanded(
                               child: OutlinedButton.icon(
-                                onPressed: () => _previewAttachment(attachmentUrl, attachmentName),
+                                onPressed: () => _previewAttachment(
+                                    attachmentUrl, attachmentName),
                                 icon: const Icon(Icons.visibility),
                                 label: const Text('Preview'),
                                 style: OutlinedButton.styleFrom(
@@ -432,7 +548,8 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                             const SizedBox(width: 12),
                             Expanded(
                               child: ElevatedButton.icon(
-                                onPressed: () => _downloadFile(attachmentUrl, attachmentName),
+                                onPressed: () => _downloadFile(
+                                    attachmentUrl, attachmentName),
                                 icon: const Icon(Icons.download),
                                 label: const Text('Download'),
                                 style: ElevatedButton.styleFrom(
@@ -449,7 +566,6 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
               ),
               const SizedBox(height: 16),
             ],
-
             if (office != null || admin != null) ...[
               _buildSectionCard(
                 'Assignment Details',
@@ -475,16 +591,14 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
               ),
               const SizedBox(height: 16),
             ],
-
             _buildSectionCard('Description', Icons.description, Colors.orange, [
               Text(
-                widget.issue['description']?.toString() ??
+                issueData['description']?.toString() ??
                     'No description provided',
                 style: const TextStyle(fontSize: 14, color: Colors.black87),
               ),
             ]),
             const SizedBox(height: 16),
-
             if (isRejected && rejectionReason != null) ...[
               _buildSectionCard(
                 'Admin Response',
@@ -529,26 +643,25 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
               ),
               const SizedBox(height: 16),
             ],
-
             _buildSectionCard('Status Updates', Icons.timeline, Colors.teal, [
               _buildUpdateItem(
                 'Issue Submitted',
                 'Your issue has been submitted and assigned for review.',
-                widget.issue['created_at']?.toString(),
+                issueData['created_at']?.toString(),
                 Colors.blue,
               ),
-              if (widget.issue['status'] == 'in_progress')
+              if (issueData['status'] == 'in_progress')
                 _buildUpdateItem(
                   'Under Review',
                   'An administrator is currently reviewing your issue.',
-                  widget.issue['updated_at']?.toString(),
+                  issueData['updated_at']?.toString(),
                   Colors.orange,
                 ),
               if (isEscalated && escalationLevel > 0)
                 _buildUpdateItem(
                   'Issue Escalated to Level $escalationLevel',
                   'Your issue has been forwarded to a higher office for faster resolution.',
-                  widget.issue['escalated_at']?.toString(),
+                  issueData['escalated_at']?.toString(),
                   Colors.purple,
                 ),
               if (isRejected)
@@ -556,148 +669,109 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
                   'Issue Rejected',
                   rejectionReason ??
                       'Your issue has been rejected by the administrator.',
-                  widget.issue['rejected_at']?.toString(),
+                  issueData['rejected_at']?.toString(),
                   Colors.red,
                 ),
               if (status == 'resolved')
                 _buildUpdateItem(
                   'Issue Resolved',
                   'Your issue has been resolved successfully.',
-                  widget.issue['updated_at']?.toString(),
+                  issueData['updated_at']?.toString(),
                   Colors.green,
                 ),
             ]),
             const SizedBox(height: 16),
-
-            _buildSectionCard(
-              'Feedback & Comments',
-              Icons.chat,
-              Colors.teal,
-              [
-                if (_isLoadingComments)
-                  const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(20),
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  )
-                else if (_comments.isEmpty)
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.grey[50],
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Column(
-                      children: [
-                        Icon(Icons.chat_bubble_outline,
-                            size: 40, color: Colors.grey[400]),
-                        const SizedBox(height: 8),
-                        Text(
-                          'No feedback yet',
-                          style:
-                              TextStyle(color: Colors.grey[500], fontSize: 14),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Comments from the admin will appear here',
-                          style:
-                              TextStyle(color: Colors.grey[400], fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  )
-                else
-                  ..._comments.map((comment) => _buildCommentItem(comment)),
-
-                const SizedBox(height: 12),
-
+            _buildSectionCard('Feedback & Comments', Icons.chat, Colors.teal, [
+              if (_isLoadingComments)
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(20),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else if (_comments.isEmpty)
                 Container(
+                  padding: const EdgeInsets.all(20),
                   decoration: BoxDecoration(
                     color: Colors.grey[50],
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.grey[300]!),
+                    borderRadius: BorderRadius.circular(10),
                   ),
                   child: Column(
                     children: [
-                      TextField(
-                        controller: _commentController,
-                        maxLines: 3,
-                        decoration: const InputDecoration(
-                          hintText: 'Add a comment or question...',
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.all(12),
-                        ),
+                      Icon(Icons.chat_bubble_outline,
+                          size: 40, color: Colors.grey[400]),
+                      const SizedBox(height: 8),
+                      Text(
+                        'No feedback yet',
+                        style: TextStyle(color: Colors.grey[500], fontSize: 14),
                       ),
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          border:
-                              Border(top: BorderSide(color: Colors.grey[200]!)),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.end,
-                          children: [
-                            Text(
-                              '${_commentController.text.length}/500',
-                              style: TextStyle(
-                                  fontSize: 11, color: Colors.grey[500]),
-                            ),
-                            const SizedBox(width: 12),
-                            ElevatedButton.icon(
-                              onPressed:
-                                  _isSubmittingComment ? null : _submitComment,
-                              icon: _isSubmittingComment
-                                  ? const SizedBox(
-                                      width: 14,
-                                      height: 14,
-                                      child: CircularProgressIndicator(
-                                          strokeWidth: 2, color: Colors.white),
-                                    )
-                                  : const Icon(Icons.send, size: 16),
-                              label: const Text('Send'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.green,
-                                foregroundColor: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Comments from the admin will appear here',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
                       ),
                     ],
                   ),
+                )
+              else
+                ..._comments.map((comment) => _buildCommentItem(comment)),
+              const SizedBox(height: 12),
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey[300]!),
                 ),
-              ],
-            ),
-            const SizedBox(height: 24),
-
-            if (isRejected) ...[
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: ElevatedButton.icon(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.refresh, color: Colors.white),
-                  label: const Text(
-                    'Resubmit Issue',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
+                child: Column(children: [
+                  TextField(
+                    controller: _commentController,
+                    maxLines: 3,
+                    decoration: const InputDecoration(
+                      hintText: 'Add a comment or question...',
+                      border: InputBorder.none,
+                      contentPadding: EdgeInsets.all(12),
                     ),
                   ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      border: Border(top: BorderSide(color: Colors.grey[200]!)),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        Text(
+                          '${_commentController.text.length}/500',
+                          style:
+                              TextStyle(fontSize: 11, color: Colors.grey[500]),
+                        ),
+                        const SizedBox(width: 12),
+                        ElevatedButton.icon(
+                          onPressed:
+                              _isSubmittingComment ? null : _submitComment,
+                          icon: _isSubmittingComment
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : const Icon(Icons.send, size: 16),
+                          label: const Text('Send'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                ),
+                ]),
               ),
-            ],
+            ]),
           ],
         ),
       ),
@@ -1030,9 +1104,12 @@ class _IssueTrackingPageState extends State<IssueTrackingPage> {
     );
   }
 
+  // FIXED: Comment item that shows both student and admin comments
   Widget _buildCommentItem(Map<String, dynamic> comment) {
-    final isAdmin = comment['admin_id'] != null;
-    final name = comment['admin_name'] ?? comment['student_name'] ?? 'Unknown';
+    final isAdmin = comment['admin_id'] != null && comment['admin_id'] != '';
+    final name = isAdmin
+        ? (comment['admin_name'] ?? 'Admin')
+        : (comment['student_name'] ?? 'Student');
     final role = isAdmin ? 'Admin' : 'You';
 
     return Container(

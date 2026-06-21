@@ -151,7 +151,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
     _editDescriptionController.text = oldDescription;
     _editSelectedPriorityId = oldPriorityId.toString();
 
-    // Find the selected priority details
     final selectedPriority = _priorities.firstWhere(
       (p) => p['id'] == oldPriorityId,
       orElse: () => {},
@@ -172,7 +171,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Category Name Field
                   TextField(
                     controller: _editCategoryNameController,
                     decoration: InputDecoration(
@@ -192,8 +190,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                     autofocus: true,
                   ),
                   const SizedBox(height: 10),
-
-                  // Description Field
                   TextField(
                     controller: _editDescriptionController,
                     decoration: InputDecoration(
@@ -213,8 +209,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                     maxLines: 3,
                   ),
                   const SizedBox(height: 10),
-
-                  // Priority Dropdown
                   DropdownButtonFormField<String>(
                     decoration: InputDecoration(
                       labelText: 'Priority Level',
@@ -455,7 +449,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
               key: _formKey,
               child: Column(
                 children: [
-                  // Category Name Field
                   TextFormField(
                     controller: _categoryNameController,
                     decoration: InputDecoration(
@@ -486,8 +479,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                     },
                   ),
                   const SizedBox(height: 15),
-
-                  // Description Field
                   TextFormField(
                     controller: _descriptionController,
                     decoration: InputDecoration(
@@ -518,8 +509,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                     },
                   ),
                   const SizedBox(height: 15),
-
-                  // Priority Dropdown - FIXED VERSION
                   DropdownButtonFormField<String>(
                     decoration: InputDecoration(
                       labelText: 'Priority Level',
@@ -548,7 +537,7 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                     items: _priorities.map((priority) {
                       return DropdownMenuItem<String>(
                         value: priority['id'].toString(),
-                        child: Text(priority['name']), // Only show name
+                        child: Text(priority['name']),
                       );
                     }).toList(),
                     onChanged: (value) {
@@ -569,8 +558,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                     },
                   ),
                   const SizedBox(height: 15),
-
-                  // Add Button
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
@@ -607,8 +594,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
               ),
             ),
           ),
-
-          // Error Message
           if (_errorMessage != null)
             Container(
               padding: const EdgeInsets.all(12),
@@ -630,8 +615,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                 ],
               ),
             ),
-
-          // Categories List
           Expanded(
             child: _isLoading
                 ? const Center(
@@ -729,7 +712,6 @@ class _AddIssuesCategoryState extends State<AddIssuesCategory> {
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    // Priority Badge
                                     Container(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 10,
